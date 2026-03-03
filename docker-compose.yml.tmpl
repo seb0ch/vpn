@@ -1,0 +1,91 @@
+name: vpn
+
+networks:
+  vpn:
+    name: vpn
+    driver: bridge
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+services:
+  # DNS — dnscrypt-proxy, authenticates and encrypts all DNS queries.
+  # Not published to the host; reachable only within the vpn network.
+  dns:
+    image: dns
+    container_name: dns
+    restart: unless-stopped
+    logging:
+      driver: "none"
+    networks:
+      vpn:
+        ipv4_address: 172.20.0.2
+    cap_add:
+      - NET_BIND_SERVICE
+    expose:
+      - "53/udp"
+      - "53/tcp"
+    healthcheck:
+      test: ["CMD", "drill", "@127.0.0.1", "cloudflare.com"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # AmneziaWG — obfuscated WireGuard VPN server.
+  amneziawg:
+    image: amneziawg
+    container_name: amneziawg
+    restart: unless-stopped
+    logging:
+      driver: "none"
+    networks:
+      vpn:
+        ipv4_address: 172.20.0.3
+    ports:
+      - "0.0.0.0:AWG_PORT:AWG_PORT/udp"
+    volumes:
+      # Mounted read-only; host-side scripts write to this directory for hot-reload.
+      - ./amneziawg/conf:/etc/awg:ro
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+    devices:
+      - /dev/net/tun
+    healthcheck:
+      test: ["CMD", "awg", "show", "awg0"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      dns:
+        condition: service_healthy
+
+  # Xray REALITY — VLESS proxy disguised as HTTPS traffic to cloudflare.com.
+  xray:
+    image: xray
+    container_name: xray
+    restart: unless-stopped
+    logging:
+      driver: "none"
+    networks:
+      vpn:
+        ipv4_address: 172.20.0.4
+    ports:
+      - "0.0.0.0:443:443/tcp"
+    volumes:
+      - ./xray/conf:/etc/xray
+    healthcheck:
+      # pgrep is provided by BusyBox on Alpine — checks the process is running.
+      test: ["CMD", "pgrep", "xray"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      dns:
+        condition: service_healthy

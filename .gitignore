@@ -1,0 +1,24 @@
+# ── Private keys & generated secrets ─────────────────────────────────────────
+amneziawg/conf/server_private.key
+amneziawg/conf/server_public.key
+amneziawg/conf/client_*.conf
+amneziawg/conf/client_*.png
+amneziawg/conf/awg0.conf.lock
+amneziawg/conf/.next_ip_*
+xray/conf/reality_keys.txt
+xray/conf/config.json.lock
+xray/conf/.conn_info_*
+
+# ── Runtime configs with embedded secrets (use templates for VCS) ────────────
+docker-compose.yml
+amneziawg/conf/awg0.conf
+xray/conf/config.json
+
+
+# ── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

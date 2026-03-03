@@ -1,0 +1,6 @@
+conf/
+deploy.sh
+add-client.sh
+gen-keys.sh
+remove-client.sh
+.dockerignore
