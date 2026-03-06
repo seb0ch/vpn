@@ -7,7 +7,17 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
-# ── 1. Verify Docker is installed ────────────────────────────────────────────
+# ── 1. Enable IP forwarding on the host ──────────────────────────────────────
+if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != "1" ]]; then
+  log_info "Enabling IP forwarding…"
+  sysctl -w net.ipv4.ip_forward=1
+fi
+if ! grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null; then
+  echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+  log_info "Made IP forwarding persistent in /etc/sysctl.conf"
+fi
+
+# ── 2. Verify Docker is installed ────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
   log_error "Docker is not installed. Please install Docker and Docker Compose first."
   exit 1
@@ -22,13 +32,71 @@ log_info "Docker: $(docker --version)"
 log_info "Docker Compose: $(docker compose version)"
 echo ""
 
-# ── 2. Build Docker images ───────────────────────────────────────────────────
+# ── 3. Build and install AmneziaWG kernel module ────────────────────────────
+if lsmod | grep -q '^amneziawg'; then
+  log_info "AmneziaWG kernel module already loaded — skipping."
+elif modprobe amneziawg 2>/dev/null; then
+  log_info "AmneziaWG kernel module loaded from existing install."
+else
+  log_info "Building AmneziaWG kernel module in Docker…"
+
+  # Detect Ubuntu version and kernel
+  if [[ ! -f /etc/os-release ]]; then
+    log_error "Cannot detect OS — /etc/os-release not found."
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  source /etc/os-release
+  if [[ "${ID}" != "ubuntu" ]]; then
+    log_error "Unsupported OS: ${ID}. Only Ubuntu is supported."
+    exit 1
+  fi
+  UBUNTU_VERSION="${VERSION_ID}"       # e.g. "22.04"
+  KERNEL_VERSION="$(uname -r)"        # e.g. "5.15.0-91-generic"
+
+  log_info "OS: Ubuntu ${UBUNTU_VERSION}, kernel: ${KERNEL_VERSION}"
+
+  # Build the .ko inside a matching Ubuntu container with kernel headers
+  KMOD_DIR="/lib/modules/${KERNEL_VERSION}/extra"
+  mkdir -p "${KMOD_DIR}"
+
+  BUILD_CTX=$(mktemp -d)
+
+  docker build --no-cache -t amneziawg-kmod-builder -f - "${BUILD_CTX}" <<DOCKERFILE
+FROM ubuntu:${UBUNTU_VERSION}
+RUN apt-get update -qq && \\
+    apt-get install -y -qq --no-install-recommends \\
+      git make gcc linux-headers-${KERNEL_VERSION} ca-certificates && \\
+    rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module /src/awg-module
+WORKDIR /src/awg-module/src
+RUN make -C /lib/modules/${KERNEL_VERSION}/build M=\$(pwd) modules
+DOCKERFILE
+
+  rm -rf "${BUILD_CTX}"
+
+  # Copy the built module out of the builder container
+  docker run --rm amneziawg-kmod-builder \
+    cat /src/awg-module/src/amneziawg.ko > "${KMOD_DIR}/amneziawg.ko"
+
+  # Clean up builder image
+  docker rmi amneziawg-kmod-builder >/dev/null 2>&1 || true
+
+  # Register and load the module
+  depmod -a "${KERNEL_VERSION}"
+  modprobe amneziawg
+
+  log_info "AmneziaWG kernel module built and loaded."
+fi
+echo ""
+
+# ── 4. Build Docker images ───────────────────────────────────────────────────
 log_info "Building Docker images…"
 docker build -t amneziawg ./amneziawg
 docker build -t xray      ./xray
 docker build -t dns       ./dns
 
-# ── 3. AmneziaWG keys ────────────────────────────────────────────────────────
+# ── 5. AmneziaWG keys ────────────────────────────────────────────────────────
 if [[ ! -f amneziawg/conf/server_private.key ]]; then
   log_info "Generating AmneziaWG server keys…"
   ./amneziawg/gen-keys.sh
@@ -37,7 +105,7 @@ else
   log_info "(Delete amneziawg/conf/server_private.key to regenerate.)"
 fi
 
-# ── 4. docker-compose.yml ────────────────────────────────────────────────────
+# ── 6. docker-compose.yml ────────────────────────────────────────────────────
 AWG_PORT=$(grep "^ListenPort" amneziawg/conf/awg0.conf | awk '{print $3}')
 if [[ -z "${AWG_PORT}" ]]; then
   log_error "Could not read ListenPort from amneziawg/conf/awg0.conf"
@@ -46,7 +114,7 @@ fi
 sed "s/AWG_PORT/${AWG_PORT}/g" docker-compose.yml.tmpl > docker-compose.yml
 log_info "Generated docker-compose.yml (AWG port ${AWG_PORT})"
 
-# ── 5. Xray keys ─────────────────────────────────────────────────────────────
+# ── 7. Xray keys ─────────────────────────────────────────────────────────────
 if [[ ! -f xray/conf/reality_keys.txt ]]; then
   log_info "Generating Xray REALITY keys…"
   ./xray/gen-keys.sh
@@ -55,7 +123,7 @@ else
   log_info "(Delete xray/conf/reality_keys.txt to regenerate.)"
 fi
 
-# ── 6. Start services ────────────────────────────────────────────────────────
+# ── 8. Start services ────────────────────────────────────────────────────────
 log_info "Starting services…"
 docker compose up -d
 

@@ -55,8 +55,12 @@ PYEOF
 # ── Delete client files ────────��──────────────────────────────────────────────
 rm -f "${CLIENT_CONF}" "conf/client_${CLIENT_NAME}.png"
 
-# ── Restart service to apply changes ───────────────────────────────────────
-docker compose -f "${SCRIPT_DIR}/../docker-compose.yml" restart amneziawg >/dev/null
+# ── Hot-reload: sync config without restarting ────────────────────────────────
+docker exec amneziawg sh -c '
+  grep -v -E "^(Address|PostUp|PostDown|SaveConfig|MTU|DNS|Table|PreUp|PreDown)\s*=" /etc/awg/awg0.conf > /tmp/awg0_stripped.conf
+  awg syncconf awg0 /tmp/awg0_stripped.conf
+  rm -f /tmp/awg0_stripped.conf
+'
 
 
 log_info "Client '${CLIENT_NAME}' removed."

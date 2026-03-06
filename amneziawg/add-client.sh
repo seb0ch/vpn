@@ -38,8 +38,8 @@ H2=$(awk   '/^H2  *=/{print $3}' "${CONF}")
 H3=$(awk   '/^H3  *=/{print $3}' "${CONF}")
 H4=$(awk   '/^H4  *=/{print $3}' "${CONF}")
 
-# ── Generate client keypair + PSK inside the container ───────────────────────
-KEY_OUTPUT=$(docker run --rm --entrypoint sh amneziawg -c '
+# ── Generate client keypair + PSK inside the running container ────────────────
+KEY_OUTPUT=$(docker exec amneziawg sh -c '
   PRIV=$(awg genkey)
   PUB=$(echo "$PRIV" | awg pubkey)
   PSK=$(awg genpsk)
@@ -60,8 +60,8 @@ SERVER_IP=$(get_public_ip)
 (
   flock -x 200 || { log_error "Could not acquire lock on ${CONF}"; exit 1; }
 
-  # grep returns non-zero when there are no matches; treat that as "no clients yet".
-  LAST_IP=$(grep -Eo '10\.8\.0\.[0-9]{1,3}' "${CONF}" | tail -n 1 || true)
+  # Only match IPs in AllowedIPs lines (peer sections), not in PostUp/PostDown rules.
+  LAST_IP=$(grep '^AllowedIPs' "${CONF}" | grep -Eo '10\.8\.0\.[0-9]{1,3}' | tail -n 1 || true)
   if [[ -z "${LAST_IP}" ]]; then
     NEXT_IP="10.8.0.2"
   else
@@ -120,14 +120,18 @@ PersistentKeepalive = 25
 EOF
 chmod 600 "${CLIENT_CONF}"
 
-# ── Restart service to pick up the new client ────────────────────────────
-docker compose -f "${SCRIPT_DIR}/../docker-compose.yml" restart amneziawg >/dev/null
-
+# ── Hot-reload: sync the new peer without restarting ─────────────────────────
+# Strip awg-quick directives (Address, PostUp, PostDown, etc.) for awg syncconf.
+docker exec amneziawg sh -c '
+  grep -v -E "^(Address|PostUp|PostDown|SaveConfig|MTU|DNS|Table|PreUp|PreDown)\s*=" /etc/awg/awg0.conf > /tmp/awg0_stripped.conf
+  awg syncconf awg0 /tmp/awg0_stripped.conf
+  rm -f /tmp/awg0_stripped.conf
+'
 
 # ── Print QR code to terminal ─────────────────────────────────────────────────
 echo ""
 echo "QR code:"
-docker run --rm -i --entrypoint qrencode amneziawg \
+docker exec -i amneziawg qrencode \
   -t ansiutf8 < "${CLIENT_CONF}" 2>/dev/null \
   || echo "(qrencode not available in the amneziawg image)"
 
