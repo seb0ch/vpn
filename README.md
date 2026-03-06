@@ -104,6 +104,19 @@ Import `clients/<name>_amneziawg.conf` or scan the QR code printed in the termin
 | iOS / macOS | [AmneziaWG](https://apps.apple.com/app/amneziawg/id6478942365) |
 | Windows  | [AmneziaWG](https://github.com/amnezia-vpn/amneziawg-windows-client/releases) |
 
+### MTU Tuning (macOS)
+
+Use `mtu.sh` to find the optimal MTU for your AmneziaWG client.
+
+1. Disconnect your VPN.
+2. Run:
+
+```bash
+./mtu.sh <ip-or-hostname>  # your VPN server IP
+```
+
+3. Take the script's `Good starting point` value and set it as `MTU` in your AmneziaWG client config.
+
 ### Xray REALITY
 
 Copy the VLESS link from `clients/<name>_xray.vless`, scan `clients/<name>_xray.png`, or use the terminal QR code.
@@ -130,6 +143,7 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 ├── deploy.sh               # Full server bootstrap (requires Docker pre-installed)
 ├── add-client.sh           # Add client to both AWG + Xray
 ├── remove-client.sh        # Remove client from both AWG + Xray
+├── mtu.sh                  # macOS helper to estimate path MTU and suggest AWG MTU
 ├── cleanup.sh              # Remove all containers, images, keys, and generated configs
 ├── docker-compose.yml.tmpl # Template; docker-compose.yml is generated and gitignored
 ├── lib/
