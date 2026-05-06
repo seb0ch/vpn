@@ -92,6 +92,40 @@ Both the AmneziaWG and Xray containers are restarted to apply the updated config
 
 > The per-service scripts (`amneziawg/add-client.sh`, `xray/add-client.sh`, etc.) work individually if you only need one protocol.
 
+## Per-User Upstream Chaining (Xray)
+
+Forward a specific user's traffic from this server to another Xray server, while other users continue to exit locally. AmneziaWG is unaffected — chaining is Xray-only.
+
+```
+                         ┌─▶ Internet  (other users exit here)
+this server ─VLESS/REALITY┤
+                         └─▶ upstream Xray ─▶ Internet  (chained user exits here)
+```
+
+**Setup:**
+
+1. On the **upstream** server, treat this server as a regular Xray client and save the printed VLESS link:
+   ```bash
+   ./xray/add-client.sh server1-uplink
+   ```
+
+2. On **this** server, register the upstream and route a user through it:
+   ```bash
+   ./xray/add-upstream.sh <tag> '<vless_url_from_step_1>'
+   ./xray/set-route.sh    <user> <tag>
+   ```
+
+   - `<tag>` — alias for the upstream (e.g. `eu-exit`). Cannot be `direct` or `blocked`.
+   - `<user>` — existing client name (matches the `email` field set by `add-client.sh`).
+   - Wrap the VLESS URL in single quotes — it contains `&` and `?` characters that the shell would otherwise interpret.
+
+3. Revert a user back to local exit:
+   ```bash
+   ./xray/set-route.sh <user> direct
+   ```
+
+The Xray container is restarted on each operation; users without a per-user rule continue to exit through the server's local `freedom` outbound.
+
 ## Client Apps
 
 ### AmneziaWG
@@ -162,6 +196,8 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 │   ├── gen-keys.sh         # Generates X25519 keypair + Short ID
 │   ├── add-client.sh       # Generates UUID, patches config.json, restarts
 │   ├── remove-client.sh    # Removes client from config.json, restarts
+│   ├── add-upstream.sh     # Registers an upstream Xray server as a vless+reality outbound
+│   ├── set-route.sh        # Routes a specific user through an upstream (or back to direct)
 │   └── conf/
 │       └── config.json.tmpl # Xray config template (config.json is gitignored)
 ├── dns/
