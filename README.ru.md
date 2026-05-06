@@ -164,6 +164,7 @@ VPN-клиент → туннель awg0 (10.8.0.0/24)
 ├── deploy.sh               # Развёртывание сервера (Docker должен быть предустановлен)
 ├── add-client.sh           # Добавить клиента в AWG + Xray
 ├── remove-client.sh        # Удалить клиента из AWG + Xray
+├── rebuild-amneziawg.sh    # Пересборка и перезагрузка kernel-модуля AmneziaWG после апгрейда ядра
 ├── cleanup.sh              # Удаление контейнеров, образов, ключей и сгенерированных конфигов
 ├── docker-compose.yml.tmpl # Шаблон; docker-compose.yml генерируется и добавлен в gitignore
 ├── lib/
@@ -251,6 +252,18 @@ docker exec dns drill @127.0.0.1 example.com   # Тест внутреннего
 ```bash
 ./cleanup.sh && sudo ./deploy.sh
 ```
+
+**Апгрейд ядра — модуль AmneziaWG больше не загружается:**
+
+После апгрейда ядра Ubuntu `.ko`-модуль AmneziaWG, собранный для предыдущего ядра, не загрузится. Остановите контейнер, пересоберите модуль под новое ядро, запустите снова:
+
+```bash
+docker compose stop amneziawg
+sudo ./rebuild-amneziawg.sh
+docker compose start amneziawg
+```
+
+`rebuild-amneziawg.sh` собирает модуль в одноразовом Ubuntu-контейнере под версию вашего ядра, валидирует получившийся `.ko` (`modinfo`), атомарно подменяет установленный модуль и автоматически откатывается из бэкапа, если `modprobe` упадёт. Бэкапы хранятся в `/var/backups/amneziawg-kmod/<kver>/` (3 последних).
 
 ## Удаление
 

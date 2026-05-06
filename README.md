@@ -177,6 +177,7 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 ├── deploy.sh               # Full server bootstrap (requires Docker pre-installed)
 ├── add-client.sh           # Add client to both AWG + Xray
 ├── remove-client.sh        # Remove client from both AWG + Xray
+├── rebuild-amneziawg.sh    # Rebuild and reload the AmneziaWG kernel module after a host kernel upgrade
 ├── mtu.sh                  # macOS helper to estimate path MTU and suggest AWG MTU
 ├── cleanup.sh              # Remove all containers, images, keys, and generated configs
 ├── docker-compose.yml.tmpl # Template; docker-compose.yml is generated and gitignored
@@ -265,6 +266,18 @@ docker exec dns drill @127.0.0.1 example.com   # Test internal DNS
 ```bash
 ./cleanup.sh && sudo ./deploy.sh
 ```
+
+**Kernel upgrade — AmneziaWG module no longer loads:**
+
+After an Ubuntu kernel upgrade, the AmneziaWG `.ko` built for the previous kernel will not load. Stop the container, rebuild the module against the new kernel, restart:
+
+```bash
+docker compose stop amneziawg
+sudo ./rebuild-amneziawg.sh
+docker compose start amneziawg
+```
+
+`rebuild-amneziawg.sh` builds the module in a one-shot Ubuntu container matching your kernel version, validates the resulting `.ko` (`modinfo`), atomically replaces the installed module, and auto-rolls-back from a backup if `modprobe` fails. Backups are kept in `/var/backups/amneziawg-kmod/<kver>/` (3 most recent).
 
 ## Teardown
 
