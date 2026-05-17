@@ -155,9 +155,12 @@ log_info "Extracting amneziawg.ko from builder image..."
 
 CID="$(docker create "${IMAGE_NAME}")"
 
-# Atomic install: write to a sibling .new, sanity-check, then rename. Avoids
-# leaving a corrupt .ko in place if `docker cp` is interrupted mid-stream.
-NEW_PATH="${MODULE_PATH}.new"
+# Atomic install: write to a sibling staging file, sanity-check, then rename.
+# Avoids leaving a corrupt .ko in place if `docker cp` is interrupted mid-stream.
+# The suffix must remain `.ko` because kmod's modinfo selects path-vs-module-name
+# by extension; a name like `amneziawg.ko.new` ends in `.new` and gets looked up
+# as a module name instead, falsely failing the sanity check below.
+NEW_PATH="${KMOD_DIR}/amneziawg.new.ko"
 docker cp "${CID}:/src/awg-module/src/amneziawg.ko" "${NEW_PATH}"
 
 # Drop the builder container immediately so docker rmi below succeeds without
