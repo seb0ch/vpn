@@ -117,6 +117,13 @@ DOCKERFILE
 
   log_info "AmneziaWG kernel module built and loaded."
 fi
+
+# Persist module loading across host reboots; without this the container
+# cannot recover after a reboot once CAP_SYS_MODULE is dropped.
+if [[ ! -f /etc/modules-load.d/amneziawg.conf ]]; then
+  echo amneziawg > /etc/modules-load.d/amneziawg.conf
+  log_info "Persisted module autoload: /etc/modules-load.d/amneziawg.conf"
+fi
 echo ""
 
 # ── 4. Build Docker images ───────────────────────────────────────────────────

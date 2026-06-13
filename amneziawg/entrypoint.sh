@@ -4,14 +4,23 @@ set -euo pipefail
 IFACE="awg0"
 CONF="/etc/awg/awg0.conf"
 
-# ── Ensure the amneziawg kernel module is loaded ─────────────────────────────
-if ! lsmod | grep -q '^amneziawg'; then
-  echo "Loading amneziawg kernel module…"
-  modprobe amneziawg || {
-    echo "Error: failed to load amneziawg kernel module." >&2
-    echo "Make sure the module is installed on the host (see deploy.sh)." >&2
-    exit 1
-  }
+# ── The amneziawg kernel module must already be loaded by the host ───────────
+# (deploy.sh / rebuild-amneziawg.sh load it and persist it via
+# /etc/modules-load.d/amneziawg.conf). The container deliberately has no
+# CAP_SYS_MODULE, so it cannot — and must not — load it itself.
+#
+# Read /proc/modules directly rather than `lsmod | grep -q`: under
+# `set -o pipefail`, grep -q closes the pipe on its first match and lsmod
+# dies with SIGPIPE (141), making the whole pipeline "fail" even though the
+# module IS present — a false negative that crash-loops the container.
+if ! grep -q '^amneziawg ' /proc/modules; then
+  echo "Error: amneziawg kernel module is not loaded on the host." >&2
+  echo "First install:        sudo ./deploy.sh" >&2
+  echo "After kernel upgrade: docker compose stop amneziawg &&" >&2
+  echo "                      sudo ./rebuild-amneziawg.sh &&" >&2
+  echo "                      docker compose start amneziawg" >&2
+  echo "Boot persistence:     check /etc/modules-load.d/amneziawg.conf exists." >&2
+  exit 1
 fi
 
 # ── Cleanup on exit ──────────────────────────────────────────────────────────

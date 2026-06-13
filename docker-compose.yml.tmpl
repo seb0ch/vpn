@@ -48,11 +48,8 @@ services:
     volumes:
       # Mounted read-only; host-side scripts write to this directory for hot-reload.
       - ./amneziawg/conf:/etc/awg:ro
-      # Kernel module must be installed on the host; container loads it via modprobe.
-      - /lib/modules:/lib/modules:ro
     cap_add:
       - NET_ADMIN
-      - SYS_MODULE
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1

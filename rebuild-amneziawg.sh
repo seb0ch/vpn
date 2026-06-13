@@ -58,6 +58,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Persist module loading across host reboots; without this the container
+# cannot recover after a reboot because it has no CAP_SYS_MODULE. Idempotent
+# and independent of which module ends up loaded, so it is safe to call from
+# both the normal success path and the rollback-success path.
+persist_module_autoload() {
+  if [[ ! -f /etc/modules-load.d/amneziawg.conf ]]; then
+    echo amneziawg > /etc/modules-load.d/amneziawg.conf
+    log_info "Persisted module autoload: /etc/modules-load.d/amneziawg.conf"
+  fi
+}
+
 log_info "Ubuntu version: ${UBUNTU_VERSION}"
 log_info "Ubuntu codename: ${UBUNTU_CODENAME}"
 log_info "Kernel version: ${KERNEL_VERSION}"
@@ -203,6 +214,10 @@ if ! modprobe amneziawg; then
     depmod -a "${KERNEL_VERSION}"
     if modprobe amneziawg; then
       log_warn "Previous module restored and loaded successfully."
+      # The rolled-back module is loaded and valid for this kernel; persist
+      # autoload so a reboot before the next rebuild does not crash-loop the
+      # capability-less container.
+      persist_module_autoload
     else
       log_error "Rollback also failed — manual intervention required."
       log_error "  Previous module backups: ${BACKUP_DIR}/"
@@ -212,6 +227,8 @@ if ! modprobe amneziawg; then
   fi
   exit 1
 fi
+
+persist_module_autoload
 
 log_info "Cleaning Docker image..."
 docker rmi "${IMAGE_NAME}" >/dev/null || log_warn "Could not remove builder image ${IMAGE_NAME}"
