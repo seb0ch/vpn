@@ -14,6 +14,8 @@ echo "  • VPN containers (amneziawg, xray, dns) and their Docker network"
 echo "  • Docker images:  amneziawg, xray, dns"
 echo "  • Generated server configs and keys"
 echo "  • All client configs and QR codes"
+echo "  • Host artifacts: vpn-host-firewall.service, its INPUT rule, and"
+echo "    /etc/modules-load.d/amneziawg.conf"
 echo ""
 echo "Existing VPN clients will stop working immediately."
 echo ""
@@ -64,6 +66,29 @@ rm -f xray/conf/reality_keys.txt
 
 # Transient files that survive only if an add-client run died mid-way.
 rm -f amneziawg/conf/.next_ip_* xray/conf/.conn_info_*
+
+# ── Remove host-level artifacts installed by deploy.sh ────────────────────────
+# These persist outside the repo and would otherwise affect future containers
+# on 172.20.0.0/24 (the INPUT rule) or other modules at boot (modules-load.d).
+log_info "Removing host-level artifacts…"
+
+if [[ -f /etc/systemd/system/vpn-host-firewall.service ]]; then
+  systemctl disable --now vpn-host-firewall.service 2>/dev/null || true
+  rm -f /etc/systemd/system/vpn-host-firewall.service
+  systemctl daemon-reload 2>/dev/null || true
+  log_info "  Removed vpn-host-firewall.service"
+fi
+
+# Drop the INPUT rule if still present (idempotent: -C succeeds only if it exists).
+while iptables -C INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP 2>/dev/null; do
+  iptables -D INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP
+  log_info "  Removed host INPUT rule (block NEW from 172.20.0.0/24)"
+done
+
+if [[ -f /etc/modules-load.d/amneziawg.conf ]]; then
+  rm -f /etc/modules-load.d/amneziawg.conf
+  log_info "  Removed /etc/modules-load.d/amneziawg.conf (module stays loaded until reboot)"
+fi
 
 echo ""
 log_info "Cleanup complete. The repository is back to a clean state."
