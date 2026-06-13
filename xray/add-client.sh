@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077   # the .vless link and QR PNG are bearer credentials
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}"
@@ -88,6 +89,7 @@ readonly QR_FILE="../clients/${CLIENT_NAME}_xray.png"
 
 echo "${VLESS_LINK}" > "${VLESS_FILE}"
 echo "${VLESS_LINK}" | docker exec -i xray sh -c 'qrencode -o -' > "${QR_FILE}"
+chmod 600 "${VLESS_FILE}" "${QR_FILE}"
 
 echo ""
 echo "=== Client: ${CLIENT_NAME} ==="

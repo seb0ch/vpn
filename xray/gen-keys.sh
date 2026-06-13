@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077   # every file created below holds key material
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}"
@@ -14,6 +15,7 @@ readonly CONFIG="conf/config.json"
 if [[ ! -f "${CONFIG}" ]]; then
   [[ -f conf/config.json.tmpl ]] || { log_error "conf/config.json.tmpl not found"; exit 1; }
   cp conf/config.json.tmpl "${CONFIG}"
+  chmod 600 "${CONFIG}"
   log_info "Created ${CONFIG} from template"
 fi
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077   # every file created below holds key material
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "${SCRIPT_DIR}"
@@ -13,6 +14,7 @@ rand32() { od -An -N4 -tu4 /dev/urandom | tr -d ' '; }
 if [[ ! -f conf/awg0.conf ]]; then
   [[ -f conf/awg0.tmpl ]] || { log_error "conf/awg0.tmpl not found"; exit 1; }
   cp conf/awg0.tmpl conf/awg0.conf
+  chmod 600 conf/awg0.conf
   log_info "Created conf/awg0.conf from template"
 fi
 

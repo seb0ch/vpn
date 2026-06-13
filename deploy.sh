@@ -168,6 +168,7 @@ log_info "Deployment complete."
 echo ""
 
 mkdir -p clients
+chmod 700 clients
 # Extract the host-side port (first number before the colon in the udp mapping)
 AWG_UDP_PORT=$(grep -Eo '[0-9]+:[0-9]+/udp' docker-compose.yml | head -1 | cut -d: -f1)
 echo "Open these ports on your cloud firewall (AWS Security Group, GCP VPC, etc.):"
