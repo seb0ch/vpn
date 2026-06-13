@@ -19,7 +19,7 @@ validate_client_name "${CLIENT_NAME}"
 readonly CONFIG="conf/config.json"
 
 # ── Generate a fresh UUID for this client ─────────────────────────────────────
-UUID=$(docker exec xray xray uuid)
+UUID=$(docker exec vpn-xray xray uuid)
 [[ -n "${UUID}" ]] || { log_error "Failed to generate UUID (is the xray container running?)"; exit 1; }
 
 # ── Read connection details, check for duplicates, append client (locked) ────
@@ -88,7 +88,7 @@ readonly VLESS_FILE="../clients/${CLIENT_NAME}_xray.vless"
 readonly QR_FILE="../clients/${CLIENT_NAME}_xray.png"
 
 echo "${VLESS_LINK}" > "${VLESS_FILE}"
-echo "${VLESS_LINK}" | docker exec -i xray sh -c 'qrencode -o -' > "${QR_FILE}"
+echo "${VLESS_LINK}" | docker exec -i vpn-xray sh -c 'qrencode -o -' > "${QR_FILE}"
 chmod 600 "${VLESS_FILE}" "${QR_FILE}"
 
 echo ""
@@ -103,5 +103,5 @@ echo "QR code saved to: ${QR_FILE}"
 echo ""
 echo "QR code:"
 echo "${VLESS_LINK}" \
-  | docker exec -i xray sh -c 'qrencode -t ansiutf8' 2>/dev/null \
+  | docker exec -i vpn-xray sh -c 'qrencode -t ansiutf8' 2>/dev/null \
   || echo "(qrencode not available in the xray image)"

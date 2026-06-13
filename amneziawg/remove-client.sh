@@ -42,7 +42,7 @@ fi
 rm -f "${CLIENT_CONF}"
 
 # ── Hot-reload: sync config without restarting ────────────────────────────────
-docker exec amneziawg sh -c '
+docker exec vpn-amneziawg sh -c '
   grep -v -E "^(Address|PostUp|PostDown|SaveConfig|MTU|DNS|Table|PreUp|PreDown)\s*=" /etc/awg/awg0.conf > /tmp/awg0_stripped.conf
   awg syncconf awg0 /tmp/awg0_stripped.conf
   rm -f /tmp/awg0_stripped.conf

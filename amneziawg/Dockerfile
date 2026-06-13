@@ -1,13 +1,15 @@
 # ── Build awg-tools (awg, awg-quick) ──────────────────────────────────────
 FROM alpine:3.23 AS builder-tools
 
-# Pinned upstream; bump deliberately after reviewing upstream changes.
-ARG AWG_TOOLS_COMMIT=5d6179a6d0842e98dfb349c28cf1bd8e4b9d1079
+# Commit SHA resolved from a release tag by deploy.sh (AMNEZIAWG_RELEASE or the
+# tools' latest). Fetched by SHA so a moved tag cannot change the build.
+ARG AWG_TOOLS_REF
 
 RUN apk add --no-cache git make gcc musl-dev libmnl-dev
-RUN git init /src/awg-tools && \
+RUN : "${AWG_TOOLS_REF:?AWG_TOOLS_REF build-arg is required — build through deploy.sh}" && \
+    git init /src/awg-tools && \
     git -C /src/awg-tools remote add origin https://github.com/amnezia-vpn/amneziawg-tools && \
-    git -C /src/awg-tools fetch --depth 1 origin ${AWG_TOOLS_COMMIT} && \
+    git -C /src/awg-tools fetch --depth 1 origin ${AWG_TOOLS_REF} && \
     git -C /src/awg-tools checkout --detach FETCH_HEAD
 WORKDIR /src/awg-tools/src
 RUN make

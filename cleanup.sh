@@ -10,8 +10,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 # ── Confirmation ──────────────────────────────────────────────────────────────
 echo ""
 echo "This will permanently remove:"
-echo "  • VPN containers (amneziawg, xray, dns) and their Docker network"
-echo "  • Docker images:  amneziawg, xray, dns"
+echo "  • VPN containers (vpn-amneziawg, vpn-xray, vpn-dns) and their Docker network"
+echo "  • Docker images:  amneziawg, xray, dns (all tags)"
 echo "  • Generated server configs and keys"
 echo "  • All client configs and QR codes"
 echo "  • Host artifacts: vpn-host-firewall.service, its INPUT rule, and"
@@ -34,20 +34,23 @@ if [[ -f docker-compose.yml ]]; then
 else
   # Compose file is already gone — remove containers and network by name.
   log_info "docker-compose.yml not found; stopping containers by name…"
-  for ctr in amneziawg xray dns; do
+  for ctr in vpn-amneziawg vpn-xray vpn-dns; do
     docker rm -f "${ctr}" 2>/dev/null || true
   done
   docker network rm vpn 2>/dev/null || true
 fi
 
 # ── Remove Docker images ──────────────────────────────────────────────────────
+# Images are tagged with their component release (e.g. xray:v26.6.1), so remove
+# every tag of each repository, not just a bare ":latest".
 log_info "Removing Docker images…"
-for img in amneziawg xray dns; do
-  if docker image inspect "${img}" &>/dev/null; then
-    docker image rm "${img}"
-    log_info "  Removed image: ${img}"
+for repo in amneziawg xray dns; do
+  mapfile -t refs < <(docker images "${repo}" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+  if [[ ${#refs[@]} -gt 0 ]]; then
+    docker image rm "${refs[@]}" >/dev/null
+    log_info "  Removed images: ${refs[*]}"
   else
-    log_info "  Image '${img}' not found — skipping."
+    log_info "  No '${repo}' images found — skipping."
   fi
 done
 

@@ -1,13 +1,16 @@
 # ── Stage 1: build Xray from source ──────────────────────────────────────
 FROM golang:1.26-alpine AS builder
 
-# Pinned upstream (release v26.6.1); bump deliberately after review.
-ARG XRAY_COMMIT=94ffd50060f1cfd5d7482ec90a23a92bdefdff68
+# Commit SHA resolved from a release tag by deploy.sh (XRAY_RELEASE or latest).
+# Fetched by SHA so a moved tag cannot change the build. Build via deploy.sh,
+# which always passes this; a bare `docker build` must supply it.
+ARG XRAY_REF
 
 RUN apk add --no-cache git make gcc musl-dev
-RUN git init /src/xray && \
+RUN : "${XRAY_REF:?XRAY_REF build-arg is required — build through deploy.sh}" && \
+    git init /src/xray && \
     git -C /src/xray remote add origin https://github.com/XTLS/Xray-core && \
-    git -C /src/xray fetch --depth 1 origin ${XRAY_COMMIT} && \
+    git -C /src/xray fetch --depth 1 origin ${XRAY_REF} && \
     git -C /src/xray checkout --detach FETCH_HEAD
 WORKDIR /src/xray
 RUN CGO_ENABLED=0 go build -o xray -trimpath -ldflags "-s -w" ./main
@@ -19,20 +22,17 @@ RUN apk add --no-cache bash ca-certificates tzdata libqrencode-tools
 
 COPY --from=builder /src/xray/xray /usr/local/bin/xray
 
-# Geo databases pinned to a release AND to a checksum recorded here in-repo.
-# geoip.dat feeds the `geoip:private -> blocked` routing rule, so its integrity
-# matters. The expected SHA-256 is committed (not fetched from the same mutable
-# release as the payload), so a tampered/replaced release asset fails the build.
-# To bump: change the tag, download the asset, and update the hash below.
-ARG GEOIP_TAG=202606050359
-ARG GEOIP_SHA256=a322dfb6bfd8987c83453c39582a07771c9deddf9f8f7d2d19c7927ebd5e76c8
-ARG DLC_TAG=20260612151339
-ARG DLC_SHA256=b0c1d450d422766f72ca63674cb166a91b555acb55469472ba544375bccce9a8
-RUN mkdir -p /usr/share/xray && cd /usr/share/xray && \
-    wget -qO geoip.dat https://github.com/v2fly/geoip/releases/download/${GEOIP_TAG}/geoip.dat && \
-    echo "${GEOIP_SHA256}  geoip.dat" | sha256sum -c - && \
-    wget -qO geosite.dat https://github.com/v2fly/domain-list-community/releases/download/${DLC_TAG}/dlc.dat && \
-    echo "${DLC_SHA256}  geosite.dat" | sha256sum -c -
+# Geo databases: always fetch the latest upstream release. These are public
+# routing data (geoip.dat feeds the `geoip:private -> blocked` rule); they are
+# intentionally NOT pinned or checksummed. GEO_BUST is a per-deploy nonce passed
+# by deploy.sh and referenced below so this layer is never served from cache —
+# every deploy re-pulls the latest geo data. Keep this RUN last-ish so busting it
+# does not invalidate the expensive Xray build above.
+ARG GEO_BUST=0
+RUN echo "geo cache-bust: ${GEO_BUST}" >/dev/null && \
+    mkdir -p /usr/share/xray && cd /usr/share/xray && \
+    wget -qO geoip.dat   https://github.com/v2fly/geoip/releases/latest/download/geoip.dat && \
+    wget -qO geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
 
 ENV XRAY_LOCATION_ASSET=/usr/share/xray
 

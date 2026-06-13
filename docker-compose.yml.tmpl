@@ -13,8 +13,8 @@ services:
   # DNS — dnscrypt-proxy, authenticates and encrypts all DNS queries.
   # Not published to the host; reachable only within the vpn network.
   dns:
-    image: dns
-    container_name: dns
+    image: dns:__DNS_TAG__
+    container_name: vpn-dns
     restart: unless-stopped
     logging:
       driver: "none"
@@ -35,8 +35,8 @@ services:
 
   # AmneziaWG — obfuscated WireGuard VPN server.
   amneziawg:
-    image: amneziawg
-    container_name: amneziawg
+    image: amneziawg:__AWG_TAG__
+    container_name: vpn-amneziawg
     restart: unless-stopped
     logging:
       driver: "none"
@@ -65,8 +65,8 @@ services:
 
   # Xray REALITY — VLESS proxy disguised as HTTPS traffic to cloudflare.com.
   xray:
-    image: xray
-    container_name: xray
+    image: xray:__XRAY_TAG__
+    container_name: vpn-xray
     restart: unless-stopped
     logging:
       driver: "none"

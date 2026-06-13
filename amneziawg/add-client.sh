@@ -40,7 +40,7 @@ H3=$(awk   '/^H3  *=/{print $3}' "${CONF}")
 H4=$(awk   '/^H4  *=/{print $3}' "${CONF}")
 
 # ── Generate client keypair + PSK inside the running container ────────────────
-KEY_OUTPUT=$(docker exec amneziawg sh -c '
+KEY_OUTPUT=$(docker exec vpn-amneziawg sh -c '
   PRIV=$(awg genkey)
   PUB=$(echo "$PRIV" | awg pubkey)
   PSK=$(awg genpsk)
@@ -123,7 +123,7 @@ chmod 600 "${CLIENT_CONF}"
 
 # ── Hot-reload: sync the new peer without restarting ─────────────────────────
 # Strip awg-quick directives (Address, PostUp, PostDown, etc.) for awg syncconf.
-docker exec amneziawg sh -c '
+docker exec vpn-amneziawg sh -c '
   grep -v -E "^(Address|PostUp|PostDown|SaveConfig|MTU|DNS|Table|PreUp|PreDown)\s*=" /etc/awg/awg0.conf > /tmp/awg0_stripped.conf
   awg syncconf awg0 /tmp/awg0_stripped.conf
   rm -f /tmp/awg0_stripped.conf
@@ -132,7 +132,7 @@ docker exec amneziawg sh -c '
 # ── Print QR code to terminal ─────────────────────────────────────────────────
 echo ""
 echo "QR code:"
-docker exec -i amneziawg qrencode \
+docker exec -i vpn-amneziawg qrencode \
   -t ansiutf8 < "${CLIENT_CONF}" 2>/dev/null \
   || echo "(qrencode not available in the amneziawg image)"
 

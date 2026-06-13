@@ -69,13 +69,48 @@ sudo ./deploy.sh
 This script will:
 
 1. Verify Docker and Docker Compose are installed
-2. Build all Docker images from source (`amneziawg`, `xray`, `dns`)
-3. Generate AmneziaWG server keys, random obfuscation parameters, and a random UDP port (49152–65535)
-4. Generate `docker-compose.yml` from the template
-5. Generate Xray REALITY X25519 keys and Short ID
-6. Start all services with `docker compose up -d`
+2. Resolve each third-party component to a release (see [Component versions](#component-versions))
+3. Build all images from source, tagged with their release (`amneziawg:<ver>`, `xray:<ver>`, `dns:<ver>`); the kernel module is compiled against the host kernel
+4. Generate AmneziaWG server keys, random obfuscation parameters, and a random UDP port (49152–65535)
+5. Generate `docker-compose.yml` from the template
+6. Generate Xray REALITY X25519 keys and Short ID
+7. Start all services with `docker compose up -d` (containers are named `vpn-amneziawg`, `vpn-xray`, `vpn-dns`)
 
 At the end, the script prints the two ports you must open on your cloud firewall.
+
+### Component versions
+
+Every deploy (and re-deploy) resolves each third-party component to a release
+tag and builds from it. By default it uses the **latest upstream release**; pin
+a specific one by exporting an env var before `deploy.sh`:
+
+| Component | Env var | Upstream | Image |
+|-----------|---------|----------|-------|
+| Xray-core | `XRAY_RELEASE` | XTLS/Xray-core | `xray:<tag>` |
+| AmneziaWG (kernel module **and** tools) | `AMNEZIAWG_RELEASE` | amnezia-vpn | `amneziawg:<tag>` |
+| dnscrypt-proxy | `DNSCRYPT_RELEASE` | DNSCrypt/dnscrypt-proxy | `dns:<tag>` |
+
+```bash
+# latest of everything (default)
+sudo ./deploy.sh
+
+# pin Xray, take latest for the rest
+sudo XRAY_RELEASE=v26.6.1 ./deploy.sh
+```
+
+- Resolution uses plain `git ls-remote` — no GitHub token, no `jq`. A tag is
+  always pinned to its commit **SHA**, and sources are fetched by SHA, so a
+  moved tag cannot silently change a build. The running version is visible as
+  the image tag (`docker images`), so no lock file is kept.
+- `AMNEZIAWG_RELEASE` drives both the kernel module (built on the host) and the
+  userspace tools (in the image). The `amneziawg` image is tagged with the
+  **tools** release — what the image actually contains; if the tools repo has no
+  matching tag, the tools fall back to their own latest (logged). The kernel
+  module is a separate host artifact and is only (re)built by
+  `rebuild-amneziawg.sh` or a first deploy.
+- The Xray **geo databases** (`geoip.dat`, `geosite.dat`) are always pulled at
+  their latest and are intentionally not pinned; they refresh whenever the Xray
+  image is rebuilt.
 
 ## Client Management
 
@@ -129,9 +164,9 @@ sudo ./deploy.sh
 
 - **preserves** server keys (`server_private.key`, `reality_keys.txt`) and **all
   clients** — key generation is skipped when the keys already exist;
-- **rebuilds** the `amneziawg`, `xray`, and `dns` images, so new upstream code and
-  re-pinned commits (new Xray-core / dnscrypt / awg-tools binaries, entrypoint
-  fixes) are picked up;
+- **re-resolves and rebuilds** the `amneziawg`, `xray`, and `dns` images at their
+  release (latest by default, or your `*_RELEASE` pins), so a newer upstream
+  release is picked up; the image tag reflects the deployed version;
 - **re-renders** `docker-compose.yml` from the template, so changes to container
   capabilities, mounts, or ports take effect;
 - **re-applies** the host `INPUT` rule and `/etc/modules-load.d/amneziawg.conf` if
@@ -152,8 +187,8 @@ upgrade touches them:
    and `[Peer]` blocks, then `docker compose up -d --force-recreate amneziawg`.
    (`config.json` rarely needs this — it holds your clients/routes, not policy.)
 2. **The kernel module is not rebuilt.** `deploy.sh` skips the module build when
-   one is already loaded, so a new pinned module commit or a kernel upgrade needs
-   scenario 3 (`rebuild-amneziawg.sh`).
+   one is already loaded, so picking up a newer AmneziaWG module release (or a
+   kernel upgrade) needs scenario 3 (`rebuild-amneziawg.sh`).
 
 To deliberately start fresh with **new** server keys, delete
 `amneziawg/conf/server_private.key` / `xray/conf/reality_keys.txt` (and the
@@ -163,16 +198,17 @@ existing client.
 ### 3. Recompile the AmneziaWG kernel module
 
 Needed after a host **kernel upgrade** (the `.ko` is built for one kernel
-version), or to apply a new pinned module commit. The container must be stopped
-first — `rebuild-amneziawg.sh` refuses to run while it is up:
+version), or to pick up a newer AmneziaWG module release. The container must be
+stopped first — `rebuild-amneziawg.sh` refuses to run while it is up:
 
 ```bash
 docker compose stop amneziawg
 sudo ./rebuild-amneziawg.sh
 docker compose start amneziawg
 ```
-It rebuilds the module from the pinned commit in a one-shot Ubuntu container
-matching your running kernel, validates the `.ko` with `modinfo`, atomically
+It rebuilds the module from the resolved release (`AMNEZIAWG_RELEASE` or latest)
+in a one-shot Ubuntu container matching your running kernel, validates the `.ko`
+with `modinfo`, atomically
 installs it, `modprobe`s it, persists autoload in `/etc/modules-load.d/`, and
 auto-rolls-back from a timestamped backup (`/var/backups/amneziawg-kmod/<kver>/`,
 3 most recent) if `modprobe` fails.
@@ -292,9 +328,10 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 ├── cleanup.sh              # Remove all containers, images, keys, and generated configs
 ├── docker-compose.yml.tmpl # Template; docker-compose.yml is generated and gitignored
 ├── lib/
-│   └── common.sh           # Shared utilities (logging, validation, IP fetch)
+│   ├── common.sh           # Shared utilities (logging, validation, IP fetch)
+│   └── versions.sh         # Resolves component release tags -> commit SHAs (git ls-remote)
 ├── amneziawg/
-│   ├── Dockerfile          # Builds awg-tools (awg, awg-quick) from a pinned source; the kernel module is built on the host by deploy.sh / rebuild-amneziawg.sh
+│   ├── Dockerfile          # Builds awg-tools (awg, awg-quick) from a resolved release (AWG_TOOLS_REF); the kernel module is built on the host by deploy.sh / rebuild-amneziawg.sh
 │   ├── entrypoint.sh       # Verifies the host module is loaded (fail-fast, no CAP_SYS_MODULE), brings up awg0 via awg-quick
 │   ├── gen-keys.sh         # Generates server keys + obfuscation params + random port (umask 077)
 │   ├── add-client.sh       # Generates keypair + PSK, writes config, hot-reloads via awg syncconf
@@ -303,7 +340,7 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 │   └── conf/
 │       └── awg0.tmpl       # Server config template incl. forward-path firewall (awg0.conf is gitignored)
 ├── xray/
-│   ├── Dockerfile          # Multi-stage: builds Xray-core from a pinned commit; geo DBs checksum-verified
+│   ├── Dockerfile          # Multi-stage: builds Xray-core from a resolved release (XRAY_REF); geo DBs pulled latest
 │   ├── entrypoint.sh       # Starts Xray with config
 │   ├── gen-keys.sh         # Generates X25519 keypair + Short ID (umask 077)
 │   ├── add-client.sh       # Generates UUID, patches config.json, restarts
@@ -339,7 +376,7 @@ All VPN client DNS queries are intercepted via iptables DNAT and redirected to a
 
 ## Security Notes
 
-- **Built from source, pinned** — the AmneziaWG kernel module, awg-tools, Xray-core, and dnscrypt-proxy are all compiled from source. Each upstream is pinned to a specific commit (kernel-module commit in `lib/common.sh`, the rest via Dockerfile `ARG`s), and the Xray geo-databases are verified against SHA-256 hashes recorded in-repo — a tampered or swapped upstream fails the build. No pre-built binaries.
+- **Built from source, version-pinned per build** — the AmneziaWG kernel module, awg-tools, Xray-core, and dnscrypt-proxy are all compiled from source. Each deploy resolves a release tag (the latest, or a pinned `*_RELEASE` — see [Component versions](#component-versions)) down to its immutable commit **SHA** and fetches by that SHA, so a moved tag cannot silently change a build; the image tag records the deployed version. The Xray geo-databases are pulled at their latest and are intentionally not pinned. No pre-built binaries.
 - **Minimal container privileges** — the AmneziaWG container holds only `CAP_NET_ADMIN`; it has no `CAP_SYS_MODULE` and no `/lib/modules` mount, so a container compromise cannot load code into the host kernel. The module is loaded on the host and persisted via `/etc/modules-load.d/`.
 - **VPN-client network isolation** — forward-path rules in `awg0.tmpl` drop client→client traffic, the cloud metadata endpoint (`169.254.169.254`, `168.63.129.16`), RFC1918, and CGNAT ranges. `deploy.sh` also installs a host `INPUT` rule (persisted as `vpn-host-firewall.service`) blocking new connections from the docker subnet to the host — closing the path to host services (e.g. sshd) that the cloud firewall cannot see.
 - **DNS privacy** — *all* client port-53 traffic (any destination) is forcibly DNAT'ed to the internal dnscrypt-proxy resolver; clients cannot bypass it with an external plain-DNS server. (DoH/DoT on 443/853 cannot be intercepted at this layer.)
@@ -359,14 +396,14 @@ docker compose ps                 # Check container status and health
 **AmneziaWG container restarting / won't stay up:**
 ```bash
 lsmod | grep amneziawg                   # Module must be loaded on the HOST
-docker exec amneziawg awg show           # Interface status (if the container is up)
+docker exec vpn-amneziawg awg show           # Interface status (if the container is up)
 ```
 If the module is missing, run scenario 3 (`rebuild-amneziawg.sh`). The container
 has no `CAP_SYS_MODULE` by design and cannot load the module itself.
 
 **Client can't connect (AWG):**
 ```bash
-docker exec amneziawg awg show awg0      # Check if peer is listed
+docker exec vpn-amneziawg awg show awg0      # Check if peer is listed
 ```
 
 **Client can't connect (Xray):**
@@ -375,7 +412,7 @@ docker exec amneziawg awg show awg0      # Check if peer is listed
 
 **DNS not resolving:**
 ```bash
-docker exec dns drill @127.0.0.1 example.com   # Test internal DNS
+docker exec vpn-dns drill @127.0.0.1 example.com   # Test internal DNS
 ```
 
 **Regenerate everything:**

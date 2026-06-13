@@ -20,8 +20,10 @@ if [[ ! -f "${CONFIG}" ]]; then
 fi
 
 # ── Generate X25519 keypair ───────────────────────────────────────────────────
+# Image tag is passed by deploy.sh (xray:<release>); default to the bare repo
+# name for standalone use.
 log_info "Generating REALITY keys…"
-KEYS=$(docker run --rm --entrypoint xray xray x25519 2>&1)
+KEYS=$(docker run --rm --entrypoint xray "${XRAY_IMAGE:-xray}" x25519 2>&1)
 
 # Parse output robustly — handle both "Private key: x" and "PrivateKey: x" formats.
 PRIVATE_KEY=$(printf '%s\n' "${KEYS}" | awk '/[Pp]rivate.*[Kk]ey/{print $NF}')

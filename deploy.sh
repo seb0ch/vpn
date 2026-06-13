@@ -6,6 +6,8 @@ cd "${SCRIPT_DIR}"
 
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
+# shellcheck source=lib/versions.sh
+source "${SCRIPT_DIR}/lib/versions.sh"
 
 # ── 1. Enable IP forwarding on the host ──────────────────────────────────────
 if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != "1" ]]; then
@@ -59,11 +61,70 @@ systemctl enable --now vpn-host-firewall.service >/dev/null
 log_info "Host INPUT rule installed and persisted via vpn-host-firewall.service."
 echo ""
 
+# ── 2c. Resolve third-party component versions ──────────────────────────────
+# Every deploy/re-deploy resolves each component to a release tag — its
+# *_RELEASE env var if set, otherwise the latest upstream release — and pins it
+# to a commit SHA. Images are TAGGED with the release (xray:<ver>, …); sources
+# are FETCHED by SHA, so a moved tag can't change a build. See lib/versions.sh.
+log_info "Resolving component versions…"
+
+# Reject a malformed *_RELEASE up front. Without this, an invalid value (e.g.
+# containing '/') would make resolve_ref fail and be indistinguishable from a
+# tag that simply doesn't exist — the AmneziaWG branch would then silently fall
+# back to "latest" instead of telling the operator their pin is wrong.
+for _rel in XRAY_RELEASE AMNEZIAWG_RELEASE DNSCRYPT_RELEASE; do
+  _val="${!_rel:-}"
+  if [[ -n "${_val}" ]] && ! valid_docker_tag "${_val}"; then
+    log_error "${_rel}='${_val}' is not a valid release tag."
+    exit 1
+  fi
+done
+unset _rel _val
+
+# resolve_into <tag_var> <sha_var> <name> <repo> <env_value>
+# Sets the two named globals; aborts the script on failure (note: must run in
+# the current shell, never inside $(), so its exit propagates).
+resolve_into() {
+  local out
+  if ! out="$(resolve_ref "$4" "$5")"; then
+    log_error "Could not resolve a release for $3 (network issue or no matching tag?)."
+    exit 1
+  fi
+  printf -v "$1" '%s' "${out%%$'\t'*}"
+  printf -v "$2" '%s' "${out##*$'\t'}"
+}
+
+resolve_into XRAY_TAG     XRAY_SHA     "Xray"           "${REPO_XRAY}"     "${XRAY_RELEASE:-}"
+resolve_into DNSCRYPT_TAG DNSCRYPT_SHA "dnscrypt-proxy" "${REPO_DNSCRYPT}" "${DNSCRYPT_RELEASE:-}"
+
+# AmneziaWG userspace tools — this is what the `amneziawg` IMAGE contains, so it
+# is what the image is tagged with. AMNEZIAWG_RELEASE pins it; if the tools repo
+# has no such tag, fall back to the tools' own latest. (The kernel MODULE is a
+# host artifact resolved separately in section 3, only when it is actually built,
+# so a re-deploy doesn't need network to resolve a module it won't rebuild.)
+if [[ -n "${AMNEZIAWG_RELEASE:-}" ]]; then
+  if AWG_TOOLS_OUT="$(resolve_ref "${REPO_AWG_TOOLS}" "${AMNEZIAWG_RELEASE}")"; then
+    IFS=$'\t' read -r AWG_TOOLS_TAG AWG_TOOLS_SHA <<<"${AWG_TOOLS_OUT}"
+  else
+    log_warn "amneziawg-tools has no tag '${AMNEZIAWG_RELEASE}' — using its latest."
+    resolve_into AWG_TOOLS_TAG AWG_TOOLS_SHA "amneziawg-tools" "${REPO_AWG_TOOLS}" ""
+  fi
+else
+  resolve_into AWG_TOOLS_TAG AWG_TOOLS_SHA "amneziawg-tools" "${REPO_AWG_TOOLS}" ""
+fi
+
+log_info "  xray            ${XRAY_TAG}"
+log_info "  amneziawg-tools ${AWG_TOOLS_TAG} (image tag)"
+log_info "  dnscrypt-proxy  ${DNSCRYPT_TAG}"
+echo ""
+
 # ── 3. Build and install AmneziaWG kernel module ────────────────────────────
 if grep -q '^amneziawg ' /proc/modules; then
-  log_info "AmneziaWG kernel module already loaded — skipping."
+  log_info "AmneziaWG kernel module already loaded — skipping build."
+  log_info "(To move to a newer module release, run rebuild-amneziawg.sh.)"
 elif modprobe amneziawg 2>/dev/null; then
   log_info "AmneziaWG kernel module loaded from existing install."
+  log_info "(To move to a newer module release, run rebuild-amneziawg.sh.)"
 else
   log_info "Building AmneziaWG kernel module in Docker…"
 
@@ -83,8 +144,10 @@ else
 
   log_info "OS: Ubuntu ${UBUNTU_VERSION}, kernel: ${KERNEL_VERSION}"
 
-  # Pinned kernel-module source (default in lib/common.sh; override for testing).
-  AWG_KMOD_COMMIT="${AWG_KMOD_COMMIT:-${AWG_KMOD_COMMIT_DEFAULT}}"
+  # Resolve the kernel-module release only now that we know we must build it
+  # (AMNEZIAWG_RELEASE or the module repo's latest), pinned to its commit SHA.
+  resolve_into AWG_KMOD_TAG AWG_KMOD_SHA "AmneziaWG kernel module" "${REPO_AWG_KMOD}" "${AMNEZIAWG_RELEASE:-}"
+  log_info "AmneziaWG module release: ${AWG_KMOD_TAG} (${AWG_KMOD_SHA})"
 
   # Build the .ko inside a matching Ubuntu container with kernel headers
   KMOD_DIR="/lib/modules/${KERNEL_VERSION}/extra"
@@ -100,7 +163,7 @@ RUN apt-get update -qq && \\
     rm -rf /var/lib/apt/lists/*
 RUN git init /src/awg-module && \\
     git -C /src/awg-module remote add origin https://github.com/amnezia-vpn/amneziawg-linux-kernel-module && \\
-    git -C /src/awg-module fetch --depth 1 origin ${AWG_KMOD_COMMIT} && \\
+    git -C /src/awg-module fetch --depth 1 origin ${AWG_KMOD_SHA} && \\
     git -C /src/awg-module checkout --detach FETCH_HEAD
 WORKDIR /src/awg-module/src
 RUN make -C /lib/modules/${KERNEL_VERSION}/build M=\$(pwd) modules
@@ -131,15 +194,18 @@ fi
 echo ""
 
 # ── 4. Build Docker images ───────────────────────────────────────────────────
+# Each image is tagged with its component release; sources are fetched by the
+# resolved commit SHA passed as a build-arg. The xray build gets a per-deploy
+# GEO_BUST nonce so the (unpinned) geo databases are always re-pulled fresh.
 log_info "Building Docker images…"
-docker build -t amneziawg ./amneziawg
-docker build -t xray      ./xray
-docker build -t dns       ./dns
+docker build --build-arg AWG_TOOLS_REF="${AWG_TOOLS_SHA}" -t "amneziawg:${AWG_TOOLS_TAG}" ./amneziawg
+docker build --build-arg XRAY_REF="${XRAY_SHA}" --build-arg GEO_BUST="$(date +%s)" -t "xray:${XRAY_TAG}" ./xray
+docker build --build-arg DNSCRYPT_REF="${DNSCRYPT_SHA}"   -t "dns:${DNSCRYPT_TAG}"        ./dns
 
 # ── 5. AmneziaWG keys ────────────────────────────────────────────────────────
 if [[ ! -f amneziawg/conf/server_private.key ]]; then
   log_info "Generating AmneziaWG server keys…"
-  ./amneziawg/gen-keys.sh
+  AMNEZIAWG_IMAGE="amneziawg:${AWG_TOOLS_TAG}" ./amneziawg/gen-keys.sh
 else
   log_info "AmneziaWG keys already exist — skipping."
   log_info "(Delete amneziawg/conf/server_private.key to regenerate.)"
@@ -151,13 +217,17 @@ if [[ -z "${AWG_PORT}" ]]; then
   log_error "Could not read ListenPort from amneziawg/conf/awg0.conf"
   exit 1
 fi
-sed "s/AWG_PORT/${AWG_PORT}/g" docker-compose.yml.tmpl > docker-compose.yml
+sed -e "s/AWG_PORT/${AWG_PORT}/g" \
+    -e "s/__AWG_TAG__/${AWG_TOOLS_TAG}/g" \
+    -e "s/__XRAY_TAG__/${XRAY_TAG}/g" \
+    -e "s/__DNS_TAG__/${DNSCRYPT_TAG}/g" \
+    docker-compose.yml.tmpl > docker-compose.yml
 log_info "Generated docker-compose.yml (AWG port ${AWG_PORT})"
 
 # ── 7. Xray keys ─────────────────────────────────────────────────────────────
 if [[ ! -f xray/conf/reality_keys.txt ]]; then
   log_info "Generating Xray REALITY keys…"
-  ./xray/gen-keys.sh
+  XRAY_IMAGE="xray:${XRAY_TAG}" ./xray/gen-keys.sh
 else
   log_info "Xray keys already exist — skipping."
   log_info "(Delete xray/conf/reality_keys.txt to regenerate.)"

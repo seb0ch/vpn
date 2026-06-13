@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
+# shellcheck source=lib/versions.sh
+source "${SCRIPT_DIR}/lib/versions.sh"
 
 if [[ "${EUID}" -ne 0 ]]; then
   log_error "Run as root: sudo $0"
@@ -42,8 +44,14 @@ KERNEL_VERSION="$(uname -r)"
 APT_MIRROR="${APT_MIRROR:-http://mirrors.edge.kernel.org/ubuntu}"
 APT_SECURITY_MIRROR="${APT_SECURITY_MIRROR:-http://security.ubuntu.com/ubuntu}"
 
-# Pinned kernel-module source (default in lib/common.sh; override for testing).
-AWG_KMOD_COMMIT="${AWG_KMOD_COMMIT:-${AWG_KMOD_COMMIT_DEFAULT}}"
+# Resolve the kernel-module release: AMNEZIAWG_RELEASE if set, else the latest
+# upstream release, pinned to its commit SHA (fetched by SHA below).
+if ! AWG_KMOD_RESOLVED="$(resolve_ref "${REPO_AWG_KMOD}" "${AMNEZIAWG_RELEASE:-}")"; then
+  log_error "Could not resolve an AmneziaWG kernel-module release (network issue or no matching tag?)."
+  exit 1
+fi
+AWG_KMOD_TAG="${AWG_KMOD_RESOLVED%%$'\t'*}"
+AWG_KMOD_SHA="${AWG_KMOD_RESOLVED##*$'\t'}"
 
 KMOD_DIR="/lib/modules/${KERNEL_VERSION}/extra"
 # Keep backups outside /lib/modules so depmod never has to consider them.
@@ -76,12 +84,13 @@ log_info "Ubuntu version: ${UBUNTU_VERSION}"
 log_info "Ubuntu codename: ${UBUNTU_CODENAME}"
 log_info "Kernel version: ${KERNEL_VERSION}"
 log_info "Module path: ${MODULE_PATH}"
+log_info "Module release: ${AWG_KMOD_TAG} (${AWG_KMOD_SHA})"
 
 # Refuse to operate while the amneziawg container is up — its bind-mount on
 # /lib/modules and an active awg0 inside its netns would leave the host in
 # an undefined state if we swap the .ko underneath it.
-if docker ps --format '{{.Names}}' | grep -qx amneziawg; then
-  log_error "Container 'amneziawg' is running. Stop it first:"
+if docker ps --format '{{.Names}}' | grep -qx vpn-amneziawg; then
+  log_error "Container 'vpn-amneziawg' is running. Stop it first:"
   log_error "  docker compose stop amneziawg"
   exit 1
 fi
@@ -157,7 +166,7 @@ RUN apt-get clean && \\
 
 RUN git init /src/awg-module && \\
     git -C /src/awg-module remote add origin https://github.com/amnezia-vpn/amneziawg-linux-kernel-module && \\
-    git -C /src/awg-module fetch --depth 1 origin ${AWG_KMOD_COMMIT} && \\
+    git -C /src/awg-module fetch --depth 1 origin ${AWG_KMOD_SHA} && \\
     git -C /src/awg-module checkout --detach FETCH_HEAD
 
 WORKDIR /src/awg-module/src

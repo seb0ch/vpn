@@ -48,7 +48,9 @@ S4=$(( $(rand32) % 16 + 1 ))
 AMNEZIAWG_PORT=${AMNEZIAWG_PORT:-$(shuf -i 49152-65535 -n 1)}
 
 # ── Generate server keypair inside the container ──────────────────────────────
-KEY_OUTPUT=$(docker run --rm --entrypoint sh amneziawg -c '
+# Image tag is passed by deploy.sh (amneziawg:<release>); default to the bare
+# repo name for standalone use.
+KEY_OUTPUT=$(docker run --rm --entrypoint sh "${AMNEZIAWG_IMAGE:-amneziawg}" -c '
   SRV_PRIV=$(awg genkey)
   SRV_PUB=$(echo "$SRV_PRIV" | awg pubkey)
   printf "%s\n%s\n" "$SRV_PRIV" "$SRV_PUB"
