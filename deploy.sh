@@ -37,11 +37,9 @@ echo ""
 # in 172.20.0.0/24; without this rule it can reach host-local services (sshd
 # on the public IP included) without ever traversing the cloud firewall.
 # NEW-only: replies to host-initiated connections to containers still flow.
-if ! iptables -C INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP 2>/dev/null; then
-  iptables -I INPUT 1 -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP
-  log_info "Host INPUT rule installed (block NEW from 172.20.0.0/24)."
-fi
-
+# A oneshot unit owns the rule so it survives reboots; `enable --now` installs
+# it immediately and arms it for boot — a single source of truth instead of a
+# separate runtime `iptables -I` that could drift from the unit.
 cat > /etc/systemd/system/vpn-host-firewall.service <<'UNIT'
 [Unit]
 Description=Block new connections from the VPN docker subnet to the host
@@ -57,12 +55,12 @@ ExecStart=/bin/sh -c '/usr/sbin/iptables -C INPUT -s 172.20.0.0/24 -m conntrack 
 WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
-systemctl enable vpn-host-firewall.service >/dev/null
-log_info "Host INPUT rule persisted via vpn-host-firewall.service."
+systemctl enable --now vpn-host-firewall.service >/dev/null
+log_info "Host INPUT rule installed and persisted via vpn-host-firewall.service."
 echo ""
 
 # ── 3. Build and install AmneziaWG kernel module ────────────────────────────
-if lsmod | grep -q '^amneziawg'; then
+if grep -q '^amneziawg ' /proc/modules; then
   log_info "AmneziaWG kernel module already loaded — skipping."
 elif modprobe amneziawg 2>/dev/null; then
   log_info "AmneziaWG kernel module loaded from existing install."

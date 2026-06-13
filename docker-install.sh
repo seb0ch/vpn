@@ -2,6 +2,15 @@
 set -euo pipefail
 
 # Docker + Docker Compose plugin installer for Ubuntu 24.04+
+#
+# Installs everything from Ubuntu's own repositories (the `universe` component,
+# enabled by default) — NO third-party apt repo or GPG key is added. The
+# packages used:
+#   - docker.io          Docker Engine + CLI (universe)
+#   - docker-compose-v2  the `docker compose` subcommand plugin (universe)
+#   - docker-buildx      the `docker buildx` builder plugin (universe)
+# docker.io pulls Ubuntu's `containerd` (in main) as its runtime dependency.
+#
 # Skips installation if already present.
 
 RED='\033[0;31m'
@@ -34,6 +43,7 @@ fi
 # ── check existing installations ──────────────────────────────────────────────
 DOCKER_OK=false
 COMPOSE_OK=false
+BUILDX_OK=false
 
 if command -v docker &>/dev/null; then
   DOCKER_VER=$(docker --version)
@@ -47,50 +57,36 @@ if docker compose version &>/dev/null 2>&1; then
   COMPOSE_OK=true
 fi
 
-if $DOCKER_OK && $COMPOSE_OK; then
-  info "Both Docker and Docker Compose plugin are already installed. Nothing to do."
+# buildx is required for the from-source image builds (xray/gVisor). Check it
+# explicitly so an existing docker without buildx doesn't short-circuit below.
+if docker buildx version &>/dev/null 2>&1; then
+  BUILDX_VER=$(docker buildx version)
+  info "Docker buildx plugin already installed: ${BUILDX_VER}"
+  BUILDX_OK=true
+fi
+
+if $DOCKER_OK && $COMPOSE_OK && $BUILDX_OK; then
+  info "Docker, Compose and buildx plugins are already installed. Nothing to do."
   exit 0
 fi
 
-# ── install Docker (via official apt repo) ────────────────────────────────────
+# ── install from Ubuntu's default repositories (universe) ─────────────────────
+# No external apt repo or key — these all live in the stock Ubuntu archive.
+PKGS=()
+$DOCKER_OK  || PKGS+=(docker.io)
+$COMPOSE_OK || PKGS+=(docker-compose-v2)
+$BUILDX_OK  || PKGS+=(docker-buildx)
+
+info "Installing from Ubuntu repositories: ${PKGS[*]}"
+apt-get update -qq
+apt-get install -y -qq "${PKGS[@]}"
+
 if ! $DOCKER_OK; then
-  info "Installing Docker Engine..."
-
-  apt-get update -qq
-  apt-get install -y -qq \
-    ca-certificates \
-    curl \
-    gnupg \
-    lsb-release
-
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu \
-$(lsb_release -cs) stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-  apt-get update -qq
-  apt-get install -y -qq \
-    docker-ce \
-    docker-ce-cli \
-    containerd.io \
-    docker-buildx-plugin
-
   systemctl enable --now docker
   info "Docker Engine installed and started."
 fi
-
-# ── install Docker Compose plugin ─────────────────────────────────────────────
-if ! $COMPOSE_OK; then
-  info "Installing Docker Compose plugin..."
-  apt-get install -y -qq docker-compose-plugin
-  info "Docker Compose plugin installed."
-fi
+$COMPOSE_OK || info "Docker Compose plugin installed."
+$BUILDX_OK  || info "Docker buildx plugin installed."
 
 # ── verify ────────────────────────────────────────────────────────────────────
 echo
@@ -104,5 +100,9 @@ if ! docker compose version; then
   error "Docker Compose plugin verification failed."
 fi
 
+if ! docker buildx version; then
+  error "Docker buildx plugin verification failed."
+fi
+
 echo
-info "All done. Docker and Docker Compose plugin are ready."
+info "All done. Docker, Compose and buildx plugins are ready."

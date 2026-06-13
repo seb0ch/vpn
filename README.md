@@ -32,7 +32,7 @@ All VPN clients are forced to use the internal DNS resolver via iptables DNAT �
 
 ## Prerequisites
 
-- Ubuntu **24.04 or newer**
+- Ubuntu **24.04 or newer** (tested on **24.04** and **26.04**)
 - Root or sudo access
 - Docker Engine + Docker Compose plugin (see below)
 - Ports **443/tcp** and the randomly assigned **AWG UDP port** open in your cloud firewall (AWS Security Group, GCP VPC rules, etc.)
@@ -51,7 +51,9 @@ If Docker is not yet installed, use the provided helper script:
 sudo ./docker-install.sh
 ```
 
-The script installs Docker Engine and the Docker Compose plugin from the official Docker apt repository. It skips any component that is already present, and errors out on Ubuntu versions older than 24.04.
+The script installs Docker Engine, the Compose plugin and the buildx plugin from Ubuntu's own repositories (`docker.io`, `docker-compose-v2`, `docker-buildx` from the `universe` component, enabled by default) — **no third-party apt repository or GPG key is added**. It skips any component that is already present, and errors out on Ubuntu versions older than 24.04.
+
+> Note: `docker.io` depends on Ubuntu's `containerd` and therefore conflicts with the upstream `docker-ce` / `containerd.io` stack from `download.docker.com`. On a fresh host this is a clean install; if a host already runs the upstream Docker packages, purge them (and remove `/etc/apt/sources.list.d/docker.list`) before switching.
 
 > For production deployments, also consider:
 > - Firewall rules (UFW, iptables, or cloud firewall)
@@ -205,10 +207,10 @@ entry ─VLESS/REALITY──────┤
    upstream, and route the client through it:
    ```bash
    ./add-client.sh alice                       # AWG + Xray profiles for the user
-   ./xray/add-upstream.sh de '<vless_link_from_step_1>'
-   ./xray/set-route.sh    alice de
+   ./xray/add-upstream.sh germany '<vless_link_from_step_1>'
+   ./xray/set-route.sh    alice germany
    ```
-   - `<tag>` (`de` here) — alias for the exit server. Cannot be `direct` or `blocked`.
+   - `<tag>` (`germany` here) — alias for the exit server. Cannot be `direct` or `blocked`.
    - `<user>` — existing client name (the `email` set by `add-client.sh`).
    - **Wrap the VLESS URL in single quotes** — it contains `&`/`?` the shell would split on.
 
@@ -221,7 +223,7 @@ Point an existing user at a different upstream, or back to local exit. No client
 reconfiguration is needed — only the entry server changes:
 
 ```bash
-./xray/set-route.sh alice il        # send alice out via the 'il' upstream instead
+./xray/set-route.sh alice israel    # send alice out via the 'israel' upstream instead
 ./xray/set-route.sh alice direct    # send alice back to local (entry-server) exit
 ```
 `set-route` is the single source of truth for a user's per-user rule: switching
@@ -281,7 +283,7 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 ## Project Structure
 
 ```
-├── docker-install.sh       # Install Docker Engine + Compose plugin (Ubuntu 24.04+, idempotent)
+├── docker-install.sh       # Install Docker + Compose + buildx from Ubuntu repos (24.04+, idempotent)
 ├── deploy.sh               # Full server bootstrap (requires Docker pre-installed)
 ├── add-client.sh           # Add client to both AWG + Xray
 ├── remove-client.sh        # Remove client from both AWG + Xray

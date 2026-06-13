@@ -88,7 +88,7 @@ fi
 
 log_info "Checking if amneziawg module is currently loaded..."
 
-if lsmod | awk '{print $1}' | grep -qx amneziawg; then
+if grep -q '^amneziawg ' /proc/modules; then
   log_info "amneziawg is loaded. Trying to unload it..."
 
   if ! modprobe -r amneziawg; then
