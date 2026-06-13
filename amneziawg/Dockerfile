@@ -1,8 +1,14 @@
 # ── Build awg-tools (awg, awg-quick) ──────────────────────────────────────
 FROM alpine:3.23 AS builder-tools
 
+# Pinned upstream; bump deliberately after reviewing upstream changes.
+ARG AWG_TOOLS_COMMIT=5d6179a6d0842e98dfb349c28cf1bd8e4b9d1079
+
 RUN apk add --no-cache git make gcc musl-dev libmnl-dev
-RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools /src/awg-tools
+RUN git init /src/awg-tools && \
+    git -C /src/awg-tools remote add origin https://github.com/amnezia-vpn/amneziawg-tools && \
+    git -C /src/awg-tools fetch --depth 1 origin ${AWG_TOOLS_COMMIT} && \
+    git -C /src/awg-tools checkout --detach FETCH_HEAD
 WORKDIR /src/awg-tools/src
 RUN make
 

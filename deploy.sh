@@ -85,6 +85,9 @@ else
 
   log_info "OS: Ubuntu ${UBUNTU_VERSION}, kernel: ${KERNEL_VERSION}"
 
+  # Pinned kernel-module source (default in lib/common.sh; override for testing).
+  AWG_KMOD_COMMIT="${AWG_KMOD_COMMIT:-${AWG_KMOD_COMMIT_DEFAULT}}"
+
   # Build the .ko inside a matching Ubuntu container with kernel headers
   KMOD_DIR="/lib/modules/${KERNEL_VERSION}/extra"
   mkdir -p "${KMOD_DIR}"
@@ -97,7 +100,10 @@ RUN apt-get update -qq && \\
     apt-get install -y -qq --no-install-recommends \\
       git make gcc linux-headers-${KERNEL_VERSION} ca-certificates && \\
     rm -rf /var/lib/apt/lists/*
-RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module /src/awg-module
+RUN git init /src/awg-module && \\
+    git -C /src/awg-module remote add origin https://github.com/amnezia-vpn/amneziawg-linux-kernel-module && \\
+    git -C /src/awg-module fetch --depth 1 origin ${AWG_KMOD_COMMIT} && \\
+    git -C /src/awg-module checkout --detach FETCH_HEAD
 WORKDIR /src/awg-module/src
 RUN make -C /lib/modules/${KERNEL_VERSION}/build M=\$(pwd) modules
 DOCKERFILE

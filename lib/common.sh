@@ -49,3 +49,10 @@ get_public_ip() {
   fi
   printf '%s' "${ip}"
 }
+
+# ── Supply-chain pins ─────────────────────────────────────────────────────────
+# Commit of amnezia-vpn/amneziawg-linux-kernel-module compiled into the HOST
+# KERNEL by deploy.sh and rebuild-amneziawg.sh. Update deliberately: review
+# upstream changes, then bump. Override for testing via AWG_KMOD_COMMIT env.
+# shellcheck disable=SC2034  # consumed by deploy.sh / rebuild-amneziawg.sh
+readonly AWG_KMOD_COMMIT_DEFAULT="2a6e1a02ac024f54a23e18f894a279b7f870b8fb"

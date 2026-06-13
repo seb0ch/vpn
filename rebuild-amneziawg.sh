@@ -42,6 +42,9 @@ KERNEL_VERSION="$(uname -r)"
 APT_MIRROR="${APT_MIRROR:-http://mirrors.edge.kernel.org/ubuntu}"
 APT_SECURITY_MIRROR="${APT_SECURITY_MIRROR:-http://security.ubuntu.com/ubuntu}"
 
+# Pinned kernel-module source (default in lib/common.sh; override for testing).
+AWG_KMOD_COMMIT="${AWG_KMOD_COMMIT:-${AWG_KMOD_COMMIT_DEFAULT}}"
+
 KMOD_DIR="/lib/modules/${KERNEL_VERSION}/extra"
 # Keep backups outside /lib/modules so depmod never has to consider them.
 BACKUP_DIR="/var/backups/amneziawg-kmod/${KERNEL_VERSION}"
@@ -152,7 +155,10 @@ RUN apt-get clean && \\
     update-ca-certificates && \\
     rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-linux-kernel-module /src/awg-module
+RUN git init /src/awg-module && \\
+    git -C /src/awg-module remote add origin https://github.com/amnezia-vpn/amneziawg-linux-kernel-module && \\
+    git -C /src/awg-module fetch --depth 1 origin ${AWG_KMOD_COMMIT} && \\
+    git -C /src/awg-module checkout --detach FETCH_HEAD
 
 WORKDIR /src/awg-module/src
 
