@@ -32,6 +32,35 @@ log_info "Docker: $(docker --version)"
 log_info "Docker Compose: $(docker compose version)"
 echo ""
 
+# ── 2b. Host INPUT hardening ─────────────────────────────────────────────────
+# VPN-client traffic leaves the amneziawg container MASQUERADEd as an address
+# in 172.20.0.0/24; without this rule it can reach host-local services (sshd
+# on the public IP included) without ever traversing the cloud firewall.
+# NEW-only: replies to host-initiated connections to containers still flow.
+if ! iptables -C INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP 2>/dev/null; then
+  iptables -I INPUT 1 -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP
+  log_info "Host INPUT rule installed (block NEW from 172.20.0.0/24)."
+fi
+
+cat > /etc/systemd/system/vpn-host-firewall.service <<'UNIT'
+[Unit]
+Description=Block new connections from the VPN docker subnet to the host
+After=network-pre.target
+Before=network.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c '/usr/sbin/iptables -C INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP 2>/dev/null || /usr/sbin/iptables -I INPUT 1 -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable vpn-host-firewall.service >/dev/null
+log_info "Host INPUT rule persisted via vpn-host-firewall.service."
+echo ""
+
 # ── 3. Build and install AmneziaWG kernel module ────────────────────────────
 if lsmod | grep -q '^amneziawg'; then
   log_info "AmneziaWG kernel module already loaded — skipping."
