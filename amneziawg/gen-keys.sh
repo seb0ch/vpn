@@ -37,10 +37,6 @@ H4_MAX=$(( H4_MIN + $(rand32) % 1000000 + 1 ))
 (( H3_MAX > H_LIMIT )) && H3_MAX=${H_LIMIT}
 (( H4_MAX > H_LIMIT )) && H4_MAX=${H_LIMIT}
 
-readonly S_MIN=0
-readonly S_MAX=32
-readonly S4_MAX=16
-
 JC=$(( $(rand32) % 10 + 1 ))
 JMIN=$(( $(rand32) % 32 + 1 ))
 JMAX=$(( $(rand32) % (64 - JMIN + 1) + JMIN ))
