@@ -8,6 +8,7 @@ Exit codes: 0 removed, 3 peer not found.
 import os
 import re
 import sys
+import tempfile
 
 client = re.escape(os.environ['AWG_CLIENT'])
 conf = os.environ['AWG_CONF']
@@ -23,5 +24,24 @@ if not re.search(pattern, text):
 text = re.sub(pattern, '\n', text)
 text = re.sub(r'\n{3,}', '\n\n', text).rstrip() + '\n'
 
-with open(conf, 'w') as f:
-    f.write(text)
+# Atomic write: temp file + fsync + rename, preserving the existing mode.
+# A crash or disk-full mid-write must never truncate the server config (it
+# holds the server private key and every other peer).
+conf_dir = os.path.dirname(os.path.abspath(conf)) or '.'
+fd, tmp = tempfile.mkstemp(dir=conf_dir, prefix='.awg0.', suffix='.conf.tmp')
+try:
+    with os.fdopen(fd, 'w') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        os.chmod(tmp, os.stat(conf).st_mode & 0o777)
+    except FileNotFoundError:
+        pass
+    os.replace(tmp, conf)
+except Exception:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise

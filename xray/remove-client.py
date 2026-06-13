@@ -23,6 +23,24 @@ if len(filtered) == len(clients):
 
 config['inbounds'][0]['settings']['clients'] = filtered
 
+# Strip this client from every per-user routing rule too, otherwise a dangling
+# rule survives and a later client re-added under the same name silently
+# inherits the old upstream route. Mirrors set-route.sh: a rule dedicated to
+# this client is dropped; a group rule keeps its other members.
+rules = (config.get('routing') or {}).get('rules')
+if rules:
+    new_rules = []
+    for r in rules:
+        users = r.get('user') or []
+        if name in users:
+            remaining = [u for u in users if u != name]
+            if remaining:
+                new_rules.append({**r, 'user': remaining})
+            # else: rule was dedicated to this client; drop it.
+        else:
+            new_rules.append(r)
+    rules[:] = new_rules
+
 # Atomic write: temp file + fsync + rename (same pattern as add-upstream.sh).
 cfg_dir = os.path.dirname(os.path.abspath(config_path)) or '.'
 fd, tmp = tempfile.mkstemp(dir=cfg_dir, prefix='.config.', suffix='.json.tmp')
