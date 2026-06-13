@@ -30,6 +30,12 @@ validate_client_name() {
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
+# Return 0 iff the single argument is a well-formed dotted-quad IPv4 address.
+validate_ipv4() {
+  local ip="${1:-}" octet="(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)"
+  [[ "${ip}" =~ ^${octet}\.${octet}\.${octet}\.${octet}$ ]]
+}
+
 # Fetch the server's public IPv4 address via api.ipify.org.
 get_public_ip() {
   local ip
@@ -37,8 +43,8 @@ get_public_ip() {
     log_error "Could not determine public IP address (curl failed)."
     return 1
   fi
-  if [[ -z "${ip}" ]]; then
-    log_error "Public IP response was empty."
+  if ! validate_ipv4 "${ip}"; then
+    log_error "Public IP response is not a valid IPv4 address: '${ip}'"
     return 1
   fi
   printf '%s' "${ip}"
