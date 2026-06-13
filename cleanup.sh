@@ -54,13 +54,16 @@ log_info "Removing generated configs, keys, and client files…"
 
 rm -f docker-compose.yml
 rm -rf clients
+rm -f amneziawg/conf/awg0.conf
+rm -f amneziawg/conf/awg0.conf.lock
 rm -f amneziawg/conf/server_private.key
 rm -f amneziawg/conf/server_public.key
 rm -f xray/conf/config.json
+rm -f xray/conf/config.json.lock
 rm -f xray/conf/reality_keys.txt
 
-# Client files — use find to safely handle the case where none exist.
-find amneziawg/conf -maxdepth 1 \( -name 'client_*.conf' -o -name 'client_*.png' \) -delete
+# Transient files that survive only if an add-client run died mid-way.
+rm -f amneziawg/conf/.next_ip_* xray/conf/.conn_info_*
 
 echo ""
 log_info "Cleanup complete. The repository is back to a clean state."
