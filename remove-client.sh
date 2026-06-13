@@ -14,9 +14,15 @@ fi
 readonly CLIENT_NAME="$1"
 validate_client_name "${CLIENT_NAME}"
 
+# Run both halves even if one fails: a partially-revoked client must never
+# keep working credentials on the other protocol.
+FAILED=0
+
 log_info "--- AmneziaWG ---"
-"${SCRIPT_DIR}/amneziawg/remove-client.sh" "${CLIENT_NAME}"
+"${SCRIPT_DIR}/amneziawg/remove-client.sh" "${CLIENT_NAME}" || FAILED=1
 echo ""
 
 log_info "--- Xray REALITY ---"
-"${SCRIPT_DIR}/xray/remove-client.sh" "${CLIENT_NAME}"
+"${SCRIPT_DIR}/xray/remove-client.sh" "${CLIENT_NAME}" || FAILED=1
+
+exit "${FAILED}"

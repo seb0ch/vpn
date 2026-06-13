@@ -16,44 +16,30 @@ readonly CLIENT_NAME="$1"
 validate_client_name "${CLIENT_NAME}"
 
 readonly CONF="conf/awg0.conf"
-readonly CLIENT_CONF="conf/client_${CLIENT_NAME}.conf"
-
-if [[ ! -f "${CLIENT_CONF}" ]]; then
-  log_error "Client '${CLIENT_NAME}' not found (${CLIENT_CONF} missing)."
-  exit 1
-fi
-
-CLIENT_PUBLIC_KEY=$(awk '/^PublicKey/{print $3}' "${CLIENT_CONF}")
-if [[ -z "${CLIENT_PUBLIC_KEY}" ]]; then
-  log_error "Could not read PublicKey from ${CLIENT_CONF}."
-  exit 1
-fi
+readonly CLIENT_CONF="../clients/${CLIENT_NAME}_amneziawg.conf"
 
 # ── Remove the [Peer] block from the server config (locked) ──────────────────
-# Each peer block is: blank line, [Peer], # <name>, key=value lines.
+# remove-peer.py matches the peer by its `# <name>` comment; it exits 3 when
+# the peer does not exist.
+# NOTE: `set -e` is suppressed inside `( ... ) || RC=$?`, so the python call
+# needs an explicit `|| exit` to propagate its status out of the subshell.
+RC=0
 (
   flock -x 200 || { log_error "Could not acquire lock on ${CONF}"; exit 1; }
+  AWG_CLIENT="${CLIENT_NAME}" AWG_CONF="${CONF}" python3 remove-peer.py || exit
+) 200>"${CONF}.lock" || RC=$?
 
-  AWG_CLIENT="${CLIENT_NAME}" AWG_CONF="${CONF}" python3 - <<'PYEOF'
-import os, re
+if [[ "${RC}" -eq 3 ]]; then
+  # Idempotent recovery: a previous run may have updated awg0.conf but died
+  # before the syncconf. Converge the runtime state and clean up anyway.
+  log_warn "Client '${CLIENT_NAME}' has no [Peer] entry in ${CONF} (already removed?) — syncing interface anyway."
+elif [[ "${RC}" -ne 0 ]]; then
+  log_error "Failed to update ${CONF} (exit ${RC})."
+  exit "${RC}"
+fi
 
-client = re.escape(os.environ['AWG_CLIENT'])
-conf   = os.environ['AWG_CONF']
-
-with open(conf) as f:
-    text = f.read()
-
-# Match: newline, [Peer], # <name>, then all non-empty lines.
-text = re.sub(r'\n\[Peer\]\n# ' + client + r'\n(?:[^\n]+\n)*', '\n', text)
-text = re.sub(r'\n{3,}', '\n\n', text).rstrip() + '\n'
-
-with open(conf, 'w') as f:
-    f.write(text)
-PYEOF
-) 200>"${CONF}.lock"
-
-# ── Delete client files ────────��──────────────────────────────────────────────
-rm -f "${CLIENT_CONF}" "conf/client_${CLIENT_NAME}.png"
+# ── Delete client files ───────────────────────────────────────────────────────
+rm -f "${CLIENT_CONF}"
 
 # ── Hot-reload: sync config without restarting ────────────────────────────────
 docker exec amneziawg sh -c '
@@ -61,6 +47,5 @@ docker exec amneziawg sh -c '
   awg syncconf awg0 /tmp/awg0_stripped.conf
   rm -f /tmp/awg0_stripped.conf
 '
-
 
 log_info "Client '${CLIENT_NAME}' removed."

@@ -16,34 +16,36 @@ readonly CLIENT_NAME="$1"
 validate_client_name "${CLIENT_NAME}"
 
 readonly CONFIG="conf/config.json"
+readonly COMPOSE_FILE="${SCRIPT_DIR}/../docker-compose.yml"
 
-# ── Remove client from config.json (locked to prevent concurrent races) ──────
-XR_CLIENT="${CLIENT_NAME}" XR_CONFIG="${CONFIG}" \
-python3 - <<'PYEOF'
-import json, os, sys
+# ── Remove client from config.json (locked, atomic) ──────────────────────────
+# remove-client.py exits 3 when the client is not in config.json.
+# NOTE: `set -e` is suppressed inside `( ... ) || RC=$?`, so the python call
+# needs an explicit `|| exit` to propagate its status out of the subshell.
+RC=0
+(
+  flock -x 200 || { log_error "Could not acquire lock on ${CONFIG}"; exit 1; }
 
-config_path = os.environ['XR_CONFIG']
-name        = os.environ['XR_CLIENT']
+  XR_CLIENT="${CLIENT_NAME}" XR_CONFIG="${CONFIG}" python3 remove-client.py || exit
 
-with open(config_path) as f:
-    config = json.load(f)
+  # Restart inside the lock so a concurrent mutator cannot interleave between
+  # our replace and the restart (same rationale as add-upstream.sh).
+  docker compose -f "${COMPOSE_FILE}" restart xray >/dev/null \
+    || { log_error "Failed to restart xray container"; exit 1; }
+) 200>"${CONFIG}.lock" || RC=$?
 
-clients = config['inbounds'][0]['settings']['clients']
-filtered = [c for c in clients if c.get('email') != name]
+if [[ "${RC}" -eq 3 ]]; then
+  # Idempotent recovery: a previous run may have updated config.json but died
+  # before the restart. Converge the runtime state and clean up anyway.
+  log_warn "Client '${CLIENT_NAME}' not in ${CONFIG} (already removed?) — restarting xray to converge."
+  docker compose -f "${COMPOSE_FILE}" restart xray >/dev/null \
+    || { log_error "Failed to restart xray container"; exit 1; }
+elif [[ "${RC}" -ne 0 ]]; then
+  log_error "Failed to update ${CONFIG} (exit ${RC})."
+  exit "${RC}"
+fi
 
-if len(filtered) == len(clients):
-    print(f"Error: client '{name}' not found in config.json", file=sys.stderr)
-    sys.exit(1)
-
-config['inbounds'][0]['settings']['clients'] = filtered
-
-with open(config_path, 'w') as f:
-    json.dump(config, f, indent=2)
-
-print(f"Client '{name}' removed from config.json.")
-PYEOF
-
-# ── Restart service to apply the updated configs ─────────────────────────
-docker compose -f "${SCRIPT_DIR}/../docker-compose.yml" restart xray >/dev/null
+# ── Delete client credential files ────────────────────────────────────────────
+rm -f "../clients/${CLIENT_NAME}_xray.vless" "../clients/${CLIENT_NAME}_xray.png"
 
 log_info "Client '${CLIENT_NAME}' removed."
