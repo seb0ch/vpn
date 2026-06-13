@@ -86,7 +86,7 @@ At the end, the script prints the two ports you must open on your cloud firewall
 - Client names may only contain letters, digits, hyphens (`-`), and underscores (`_`).
 - For AmneziaWG: creates `clients/<name>_amneziawg.conf` and prints a QR code to the terminal.
 - For Xray: creates `clients/<name>_xray.vless` and `clients/<name>_xray.png`, prints the VLESS link and a terminal QR code.
-- Both services are restarted to apply the new configuration. This is a fast operation, typically taking only a few seconds.
+- AmneziaWG is hot-reloaded in place (`awg syncconf`, no restart, existing sessions undisturbed); Xray is restarted (typically under 2 seconds).
 
 **Remove a client** from both services:
 
@@ -94,7 +94,7 @@ At the end, the script prints the two ports you must open on your cloud firewall
 ./remove-client.sh <name>
 ```
 
-Both the AmneziaWG and Xray containers are restarted to apply the updated config.
+The AmneziaWG peer is hot-reloaded out via `awg syncconf`; the Xray container is restarted. Each half runs independently, so a failure in one still revokes the other.
 
 > The per-service scripts (`amneziawg/add-client.sh`, `xray/add-client.sh`, etc.) work individually if you only need one protocol.
 
@@ -113,19 +113,50 @@ Open the two ports it prints (443/tcp + the random AWG UDP port) in your cloud
 firewall. See [Prerequisites](#prerequisites) for the swap requirement on small
 instances.
 
-### 2. Redeploy / update an existing server
+### 2. Upgrade / redeploy an existing server
 
-Pull new code (or edit in place) and re-run the same script:
+**Upgrading is just a re-deploy — you do not remove anything.** Pull the new
+code and re-run the same script:
 
 ```bash
 git pull              # or rsync your changes onto the server
 sudo ./deploy.sh
 ```
-`deploy.sh` is **idempotent**: it rebuilds the Docker images (picking up new
-source and re-pinned upstreams), regenerates `docker-compose.yml`, and recreates
-changed containers. Existing server keys (`server_private.key`,
-`reality_keys.txt`) and all clients are **preserved** — key generation is skipped
-when the keys already exist. To force new server keys, delete those files first.
+
+`deploy.sh` is **idempotent** and non-destructive. On an already-deployed host it:
+
+- **preserves** server keys (`server_private.key`, `reality_keys.txt`) and **all
+  clients** — key generation is skipped when the keys already exist;
+- **rebuilds** the `amneziawg`, `xray`, and `dns` images, so new upstream code and
+  re-pinned commits (new Xray-core / dnscrypt / awg-tools binaries, entrypoint
+  fixes) are picked up;
+- **re-renders** `docker-compose.yml` from the template, so changes to container
+  capabilities, mounts, or ports take effect;
+- **re-applies** the host `INPUT` rule and `/etc/modules-load.d/amneziawg.conf` if
+  they are missing.
+
+Changed containers are recreated (a few seconds of downtime); unchanged ones are
+left running.
+
+**Two things a plain re-deploy does _not_ do** — handle these explicitly when an
+upgrade touches them:
+
+1. **Template changes are not back-ported to live configs.** `awg0.conf` and
+   `config.json` are generated **once** (from `awg0.tmpl` / `config.json.tmpl`)
+   and then own your live keys, clients, peers, and routes — so `deploy.sh` never
+   overwrites them. If an upgrade changes `awg0.tmpl` (e.g. new firewall rules)
+   you must migrate the live `awg0.conf` by hand, for example: back it up, port
+   the new `PostUp`/`PostDown` block over while keeping your `[Interface]` keys
+   and `[Peer]` blocks, then `docker compose up -d --force-recreate amneziawg`.
+   (`config.json` rarely needs this — it holds your clients/routes, not policy.)
+2. **The kernel module is not rebuilt.** `deploy.sh` skips the module build when
+   one is already loaded, so a new pinned module commit or a kernel upgrade needs
+   scenario 3 (`rebuild-amneziawg.sh`).
+
+To deliberately start fresh with **new** server keys, delete
+`amneziawg/conf/server_private.key` / `xray/conf/reality_keys.txt` (and the
+matching live configs) before re-deploying — but note this invalidates every
+existing client.
 
 ### 3. Recompile the AmneziaWG kernel module
 
@@ -323,11 +354,13 @@ docker compose logs <service>     # Check logs for errors
 docker compose ps                 # Check container status and health
 ```
 
-**AmneziaWG daemon fails:**
+**AmneziaWG container restarting / won't stay up:**
 ```bash
-docker exec amneziawg cat /tmp/awg.log   # Daemon startup log
-docker exec amneziawg awg show           # Interface status
+lsmod | grep amneziawg                   # Module must be loaded on the HOST
+docker exec amneziawg awg show           # Interface status (if the container is up)
 ```
+If the module is missing, run scenario 3 (`rebuild-amneziawg.sh`). The container
+has no `CAP_SYS_MODULE` by design and cannot load the module itself.
 
 **Client can't connect (AWG):**
 ```bash
@@ -372,6 +405,9 @@ Prompts for confirmation, then:
 - Stops and removes all containers and the Docker network
 - Removes Docker images (`amneziawg`, `xray`, `dns`)
 - Deletes all generated keys, server configs, client configs, and QR codes
+- Removes the host artifacts installed by `deploy.sh`: the `INPUT` rule,
+  `vpn-host-firewall.service`, and `/etc/modules-load.d/amneziawg.conf` (the
+  kernel module stays loaded until the next reboot)
 
 After cleanup, `sudo ./deploy.sh` brings everything back up from scratch.
 
