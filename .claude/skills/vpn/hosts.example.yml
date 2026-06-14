@@ -1,0 +1,35 @@
+# VPN fleet inventory — copy to ~/.config/vpn/hosts.yml and fill in.
+# Holds host addresses + SSH keys/passwords, so it lives OUTSIDE the repo and is
+# never committed. The `vpn` skill reads it to resolve an alias -> host/user/auth.
+#
+#   mkdir -p ~/.config/vpn
+#   cp .claude/skills/vpn/hosts.example.yml ~/.config/vpn/hosts.yml
+#   chmod 600 ~/.config/vpn/hosts.yml
+#   $EDITOR ~/.config/vpn/hosts.yml
+#
+# Or just ask the assistant: "add a host us, 1.2.3.4, root, key ~/.ssh/id_ed25519".
+
+defaults:
+  ssh_user: root
+  ssh_key: ~/.ssh/id_ed25519          # default auth, used unless a host overrides it
+
+hosts:
+  us:
+    host: 203.0.113.10                # IP or FQDN (e.g. us.vpn.example.com)
+    os: ubuntu-26.04
+    roles: [entry]                    # entry = clients connect here
+    # ssh_key: ~/.ssh/id_ed25519_us   # optional per-host key override
+    # ssh_user: root                  # optional override
+    # port: 22                        # optional override
+
+  de:
+    host: de.vpn.example.com
+    os: ubuntu-24.04
+    roles: [exit]                     # exit = used as an upstream landing server
+    # Password auth is supported but DISCOURAGED (plaintext on disk; needs
+    # `sshpass`). Prefer a key — `ssh-copy-id -i <key> root@<host>` then switch.
+    # ssh_password: "change-me"
+
+# Roles are advisory labels; any host can act as entry and/or exit.
+# Cross-server per-client landing (connect A, exit B) is Xray-only — AmneziaWG
+# multi-hop is not implemented.

@@ -121,8 +121,9 @@ sudo XRAY_RELEASE=v26.6.1 ./deploy.sh
 ```
 
 - Client names may only contain letters, digits, hyphens (`-`), and underscores (`_`).
-- For AmneziaWG: creates `clients/<name>_amneziawg.conf` and prints a QR code to the terminal.
-- For Xray: creates `clients/<name>_xray.vless` and `clients/<name>_xray.png`, prints the VLESS link and a terminal QR code.
+- For AmneziaWG: creates `clients/<name>_amneziawg.conf` (import file) and `clients/<name>_amneziawg.png` (QR for the mobile app), and prints a QR to the terminal.
+- For Xray: creates `clients/<name>_xray.vless` (the `vless://` link) and `clients/<name>_xray.png` (QR for the mobile app), and prints the link + a terminal QR.
+- Either way the user needs only one artifact per protocol: the **file/link** for desktop import, or the **QR PNG** to scan on a phone.
 - AmneziaWG is hot-reloaded in place (`awg syncconf`, no restart, existing sessions undisturbed); Xray is restarted (typically under 2 seconds).
 
 **Remove a client** from both services:
@@ -272,6 +273,54 @@ the local `freedom` outbound. The Xray container restarts on each operation
 > connect to. Routing AWG through another host would require a site-to-site WG
 > tunnel plus per-client policy routing, which this project does not (yet) ship.
 
+## Operate with an AI assistant (Claude Code / Codex)
+
+The repo ships a **`vpn` operator skill** — a runbook that lets Claude Code or
+Codex drive the whole fleet from plain-language requests, picking the right
+script on the right host and verifying the result. It turns the scenarios above
+into one-liners.
+
+**Setup — nothing beyond `git clone`:**
+- **Claude Code** auto-discovers it as the `vpn` skill from `.claude/skills/vpn/`.
+- **Codex** auto-reads `AGENTS.md` (repo root), which points at the same runbook.
+- *(Optional)* surface it in Codex's native skill list:
+  `ln -s "$(pwd)/.claude/skills/vpn" ~/.agents/skills/vpn`.
+
+**Host inventory** (so you can refer to servers by alias, not IP): copy the
+template and fill it in — it lives outside the repo because it holds IPs/keys:
+
+```bash
+mkdir -p ~/.config/vpn
+cp .claude/skills/vpn/hosts.example.yml ~/.config/vpn/hosts.yml
+$EDITOR ~/.config/vpn/hosts.yml        # alias -> ip / os / role / ssh key
+```
+
+You don't have to write it by hand. With no inventory, the assistant **creates
+one** (asking one-vs-many servers, address, user, and key *or* password) or
+**imports an existing/old file** if you give it a path — and it won't run any op
+until an inventory exists. You can also just say *"add a host …"* at any time.
+Hosts take an **IP or FQDN** and authenticate with an **SSH key (recommended) or
+a password** (`sshpass`; the assistant warns and suggests `ssh-copy-id`).
+
+**Examples** (just talk to the assistant):
+
+| You say | It does |
+|---------|---------|
+| "add a host `de`, `de.example.com`, user root, key `~/.ssh/id_ed25519`" | appends the host to `~/.config/vpn/hosts.yml` (creating it if absent), offers a connectivity check |
+| "deploy the VPN on `de`" | rsync/clone repo → swap check → `docker-install.sh` → `deploy.sh` → verifies containers/module, prints the ports to open |
+| "status of `de`" | containers, module, image versions, AWG-peer / Xray-client counts, egress IP |
+| "add a login `alice` on `us`" | `add-client.sh alice`, hands you the `.conf` / VLESS link / QR |
+| "I need a login that connects to `us` and exits in `de`" | asks to confirm entry/exit, sets up **Xray** chaining (`us` → `de`) and gives you the Xray profile (cross-server landing is Xray-only) |
+| "route `alice` out through `de`" | `xray/add-upstream.sh` + `xray/set-route.sh alice de` |
+| "send `alice` back to local exit" | `xray/set-route.sh alice direct` |
+| "remove `alice` from `us`" | `remove-client.sh alice` |
+| "rebuild the kernel module on `us`" | stops `amneziawg`, runs `rebuild-amneziawg.sh`, restarts |
+| "tear down `us`" | confirms, then `cleanup.sh` |
+
+Pin a component release by mentioning it (e.g. "deploy `de` with Xray v26.6.1")
+— the assistant passes `XRAY_RELEASE=…` to `deploy.sh`. You stay in the loop:
+the assistant confirms destructive/outward actions before running them.
+
 ## Client Apps
 
 ### AmneziaWG
@@ -319,6 +368,9 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 ## Project Structure
 
 ```
+├── AGENTS.md               # Conventions for AI assistants / contributors (single source of truth)
+├── CLAUDE.md               # Imports AGENTS.md (@AGENTS.md) for Claude Code
+├── .claude/skills/vpn/     # `vpn` operator skill: SKILL.md runbook + hosts.example.yml inventory template
 ├── docker-install.sh       # Install Docker + Compose + buildx from Ubuntu repos (24.04+, idempotent)
 ├── deploy.sh               # Full server bootstrap (requires Docker pre-installed)
 ├── add-client.sh           # Add client to both AWG + Xray

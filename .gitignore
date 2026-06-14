@@ -14,6 +14,12 @@ amneziawg/conf/awg0.conf
 xray/conf/config.json
 
 
+# ── VPN operator skill ───────────────────────────────────────────────────────
+# Real host inventory holds IPs/keys; canonical copy lives at ~/.config/vpn/.
+# Only the template (hosts.example.yml) is committed.
+.claude/skills/vpn/hosts.yml
+.claude/settings.local.json
+
 # ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 

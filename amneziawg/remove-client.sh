@@ -17,6 +17,7 @@ validate_client_name "${CLIENT_NAME}"
 
 readonly CONF="conf/awg0.conf"
 readonly CLIENT_CONF="../clients/${CLIENT_NAME}_amneziawg.conf"
+readonly CLIENT_QR="../clients/${CLIENT_NAME}_amneziawg.png"
 
 # ── Remove the [Peer] block from the server config (locked) ──────────────────
 # remove-peer.py matches the peer by its `# <name>` comment; it exits 3 when
@@ -39,7 +40,7 @@ elif [[ "${RC}" -ne 0 ]]; then
 fi
 
 # ── Delete client files ───────────────────────────────────────────────────────
-rm -f "${CLIENT_CONF}"
+rm -f "${CLIENT_CONF}" "${CLIENT_QR}"
 
 # ── Hot-reload: sync config without restarting ────────────────────────────────
 docker exec vpn-amneziawg sh -c '

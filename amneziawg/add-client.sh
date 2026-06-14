@@ -129,6 +129,20 @@ docker exec vpn-amneziawg sh -c '
   rm -f /tmp/awg0_stripped.conf
 '
 
+# ── Save a QR PNG (scan with the AmneziaWG mobile app) ───────────────────────
+# The QR encodes the full client config, same as the .conf file. Mirrors the
+# Xray flow so both protocols hand the user a phone-scannable image.
+readonly QR_FILE="../clients/${CLIENT_NAME}_amneziawg.png"
+if docker exec -i vpn-amneziawg sh -c 'qrencode -o -' < "${CLIENT_CONF}" > "${QR_FILE}" 2>/dev/null; then
+  chmod 600 "${QR_FILE}"
+  echo "Config saved to:  ${CLIENT_CONF}"
+  echo "QR code saved to: ${QR_FILE}"
+else
+  rm -f "${QR_FILE}"
+  echo "Config saved to:  ${CLIENT_CONF}"
+  echo "(qrencode not available in the amneziawg image — QR PNG skipped)"
+fi
+
 # ── Print QR code to terminal ─────────────────────────────────────────────────
 echo ""
 echo "QR code:"
