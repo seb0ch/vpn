@@ -34,6 +34,7 @@ All VPN clients are forced to use the internal DNS resolver via iptables DNAT �
 
 - Ubuntu **24.04 or newer** (tested on **24.04** and **26.04**)
 - Root or sudo access
+- `git` (the build resolves component release tags with `git ls-remote`) — install it first if the host lacks it (`apt-get install -y git`)
 - Docker Engine + Docker Compose plugin (see below)
 - Ports **443/tcp** and the randomly assigned **AWG UDP port** open in your cloud firewall (AWS Security Group, GCP VPC rules, etc.)
 - **≈1.5 GB of RAM or swap during the build.** Everything is compiled from source; building Xray-core (which pulls in gVisor) peaks well above what a 512 MB box has. On a small instance, add swap **before** `deploy.sh`, e.g.:
@@ -273,6 +274,39 @@ the local `freedom` outbound. The Xray container restarts on each operation
 > connect to. Routing AWG through another host would require a site-to-site WG
 > tunnel plus per-client policy routing, which this project does not (yet) ship.
 
+### 7. Restricted networks — change the REALITY camouflage domain
+
+REALITY borrows the TLS handshake of a **camouflage domain**, and the client
+sends it as the SNI. The default is `cloudflare.com`. Some **restrictive networks
+block TLS to particular SNIs** — a client there sees the TCP connection open but
+the handshake **hang (0 bytes back)**, while ordinary HTTPS still works. The fix
+is to camouflage as a site that network doesn't block.
+
+Pick a domain that is **not blocked from the client's network**, supports
+**TLS 1.3 + HTTP/2**, and isn't fronted by an unwanted CDN — a big, boring,
+locally-popular site is ideal. Quick check from the client's side (`rc` 28 =
+blocked/silent-drop; `0` = clean pass; `35`/`60` = a TLS reply came back, not a
+hang — normally a pass, but confirm since active interference can also land here):
+
+```bash
+curl -s -o /dev/null -w '%{exitcode}\n' --max-time 8 --resolve <sni>:443:<server-ip> https://<sni>/
+```
+
+Apply it:
+
+- **Before the first deploy** — edit `dest` and `serverNames` in
+  `xray/conf/config.json.tmpl`, then run `deploy.sh` (the default never touches the wire).
+- **On a running server** — in `xray/conf/config.json`, under
+  `inbounds[0].streamSettings.realitySettings`, set `dest` to `"<sni>:443"` (host
+  **and** port) and `serverNames` to `["<sni>"]` (host only); then
+  `docker compose restart xray`. Existing clients must be **reissued**: only the
+  `sni=` in each `clients/<name>_xray.vless` changes (UUIDs/keys are unchanged) —
+  regenerate the link + QR, and the client's SNI must match the server.
+
+> A whole server IP can also be blocked at the TCP layer regardless of SNI. If
+> even a non-TLS port (e.g. 22) hangs from the client's network but works from
+> elsewhere, the IP itself is filtered — use a different address.
+
 ## Operate with an AI assistant (Claude Code / Codex)
 
 The repo ships a **`vpn` operator skill** — a runbook that lets Claude Code or
@@ -418,7 +452,7 @@ Adding or removing a client is applied live via `awg syncconf` — no container 
 
 ### Xray REALITY
 
-Xray REALITY makes VPN traffic indistinguishable from legitimate HTTPS traffic to `cloudflare.com`. Unlike traditional TLS proxies, REALITY doesn't require a domain or certificate — it borrows the TLS handshake of the destination server, making it virtually undetectable by censorship systems.
+Xray REALITY makes VPN traffic look like ordinary HTTPS to a **camouflage domain** (the default is `cloudflare.com`). Unlike traditional TLS proxies, REALITY doesn't require a domain or certificate — it borrows the TLS handshake of that destination server, which makes it much harder for censorship systems to detect. On **restrictive networks that block the default camouflage SNI**, switch it to a site that network doesn't block — see [scenario 7](#7-restricted-networks--change-the-reality-camouflage-domain).
 
 Client management requires a container restart (typically under 2 seconds). Each client is identified by a UUID and connects via the VLESS protocol with `xtls-rprx-vision` flow control.
 
@@ -434,7 +468,15 @@ All VPN client DNS queries are intercepted via iptables DNAT and redirected to a
 - **DNS privacy** — *all* client port-53 traffic (any destination) is forcibly DNAT'ed to the internal dnscrypt-proxy resolver; clients cannot bypass it with an external plain-DNS server. (DoH/DoT on 443/853 cannot be intercepted at this layer.)
 - **Xray routing** blocks connections to private IP ranges (`geoip:private`) to prevent server-side request forgery.
 - **Key isolation** — all keys are generated on the server and never transmitted. Secret-writing scripts run under `umask 077`; key files, live configs, and the `clients/` directory are `chmod 600`/`700`.
-- **Firewall and SSH hardening are otherwise not automated** — beyond the host INPUT rule above, configure your cloud firewall, SSH key-only auth, and fail2ban separately (recommended for production).
+- **Firewall and SSH hardening are otherwise not automated** — beyond the host INPUT rule above, configure your cloud firewall and fail2ban separately, and lock SSH down to keys before production. Some cloud/VPS images enable password auth (via `/etc/ssh/sshd_config.d/*cloud*`) and ship a login user with a password + passwordless sudo — a brute-force path to root. After confirming key login works, add a drop-in **named to sort first** (sshd uses the *first* value it sees, so a `99-` file is overridden by `60-cloudimg-settings.conf` — use `00-`):
+  ```bash
+  printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' \
+    'X11Forwarding no' 'PermitRootLogin prohibit-password' \
+    | sudo tee /etc/ssh/sshd_config.d/00-hardening.conf
+  sudo sshd -t && sudo systemctl reload ssh   # reload (not restart) keeps your session
+  sudo passwd -l <login-user>                  # lock the account password; key auth is unaffected
+  ```
+  Verify with a **fresh** key connection before disconnecting (drop the `PermitRootLogin` line where the login user isn't root).
 - Generated keys, client configs, and `docker-compose.yml` are gitignored and never committed.
 
 ## Troubleshooting

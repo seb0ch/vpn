@@ -293,6 +293,85 @@ $SSH "cd /usr/src/vpn && docker compose stop amneziawg && ./rebuild-amneziawg.sh
 ```
 `AMNEZIAWG_RELEASE=<tag>` may prefix it to pin the module release.
 
+## REALITY camouflage (dest / SNI) on restricted networks
+
+REALITY borrows the TLS handshake of a **camouflage domain**; the client sends
+that domain as its SNI. The repo default is `cloudflare.com`
+(`xray/conf/config.json.tmpl`). On some **restrictive networks the default SNI
+is blocked**, so a client there cannot connect — this applies both to a direct
+client and to an **uplink** used for a chain (the uplink is just a client that
+one server logs into another with). What matters is the network the connection
+is made **from**: pick the camouflage for that network.
+
+**Symptom of an SNI block:** TCP to `:443` connects, but the TLS handshake gets
+**0 bytes back / times out**, while ordinary HTTPS from the same client host
+still works. That's SNI-based filtering, not a routing/IP fault (a *closed* port
+refuses fast; a *blocked* SNI hangs).
+
+**Pick a camouflage domain that** (a) is **not blocked** from the client's
+network, (b) supports **TLS 1.3 and HTTP/2**, (c) isn't fronted by a CDN you'd
+rather avoid — ideally a big, boring site popular in the server's own region.
+
+**Diagnose without changing anything** (run from the client's host, targeting
+the server IP):
+```bash
+# rc 28 = blocked (silent drop / hang); 0 = clean pass; 35/60 = a TLS reply came
+# back (NOT the hang) — normally a pass (a cert mismatch is expected when the SNI
+# != the server's serverNames), but active interference can also land here — confirm.
+curl -s -o /dev/null -w '%{exitcode}\n' --max-time 8 --resolve <sni>:443:<server-ip> https://<sni>/
+# can the server serve that handshake? want TLSv1.3 + ALPN h2
+$SSH_SERVER "openssl s_client -connect <sni>:443 -servername <sni> -alpn h2 -tls1_3 </dev/null 2>/dev/null | grep -E 'Protocol|ALPN'"
+```
+A whole server IP can also be blocked at the **TCP layer regardless of SNI** —
+test a non-TLS port too (e.g. `:22`): if even that hangs from the client network
+but works from elsewhere, the IP itself is filtered and no SNI helps — use a
+different address.
+
+**Change the camouflage** (dest is not an env var):
+- *Before first deploy* — edit `dest` + `serverNames` in
+  `xray/conf/config.json.tmpl` so the default never appears on the wire.
+- *On a live host* — in `xray/conf/config.json`, under
+  `inbounds[0].streamSettings.realitySettings`, set `dest` to `"<sni>:443"` (host
+  **and** port) and `serverNames` to `["<sni>"]` (host only); then
+  `docker compose restart xray`, then **reissue client profiles**: only the
+  `sni=` in each `<name>_xray.vless` changes (UUID/keys are unchanged), so
+  regenerate the link + QR. A client's SNI must match the server's `serverNames`.
+
+## Verify egress (proof a client/chain actually works)
+
+Config rules only prove intent; the real proof is the **egress IP**. Spin a
+throwaway Xray client from the client's `.vless` on a **deployed host** (it needs
+the local `xray:<ver>` image) and check the IP it exits from (build `/tmp/cli.json`
+= a `socks` inbound + a `vless`/`reality` outbound parsed from the link —
+id/host/port/pbk/sid/sni):
+```bash
+CID=$($SSH_ONHOST "docker run -d --rm --network host -v /tmp/cli.json:/c.json --entrypoint xray xray:<ver> run -c /c.json")
+$SSH_ONHOST "sleep 5; curl -s --max-time 15 --socks5-hostname 127.0.0.1:<port> https://api.ipify.org; echo; docker stop $CID >/dev/null"
+```
+The IP returned must equal the expected exit. For a chain, run it from the entry
+host — the IP must be the **exit's**, not the entry's.
+
+## Harden a host for production (key-only SSH)
+
+Some VPS/cloud images enable SSH **password** auth (via
+`/etc/ssh/sshd_config.d/50-cloud-init.conf` / `60-cloudimg-settings.conf`) and
+ship a login user (or root) with a usable password and passwordless sudo — a
+brute-force path to root (check yours: `sshd -T | grep -i passwordauth`,
+`passwd -S <user>`). For production, go key-only. **Confirm key login works
+first**, then:
+```bash
+# name it 00- so it sorts BEFORE the cloud-init drop-ins: sshd uses the FIRST
+# value seen, so a 99- file would be overridden by 60-cloudimg-settings.conf.
+$SSH 'printf "%s\n" "PasswordAuthentication no" "KbdInteractiveAuthentication no" \
+  "X11Forwarding no" "PermitRootLogin prohibit-password" \
+  > /etc/ssh/sshd_config.d/00-hardening.conf && sshd -t && systemctl reload ssh'
+$SSH 'passwd -l <login-user>'      # lock the account password (key auth unaffected)
+```
+`reload` (not `restart`) keeps your current session; **verify with a fresh key
+connection before disconnecting**. Drop `PermitRootLogin prohibit-password` on
+hosts whose login user isn't root. Locking the password does not break `sudo`
+(a `NOPASSWD` sudoers rule is independent of it).
+
 ## Gotchas
 
 - **Host-key churn**: reprovisioned hosts present a new key → SSH/rsync fails
@@ -304,6 +383,27 @@ $SSH "cd /usr/src/vpn && docker compose stop amneziawg && ./rebuild-amneziawg.sh
   release; the running version is visible via `docker images` / the `status` op.
   There is no lock file and no `--refresh`.
 - **AWG multi-hop** is a deferred feature — cross-server landing is Xray-only.
+- **git / docker compose may be missing** on a fresh host. Install `git`
+  (`apt-get install -y git`) before `git clone`. If Docker is present but
+  `docker compose version` fails, run `./docker-install.sh` — it adds the compose
+  **and** buildx plugins (deploy needs both; a bare `docker.io` lacks them).
+- **Very low RAM**: under ~1 GB the from-source build is painfully slow and can
+  OOM even with swap. Add ≥2 GB swap and expect long builds; sub-512 MB hosts are
+  impractical. (Watch the build; `sleep`-poll the log rather than hammering SSH,
+  which competes for the host's scarce memory.)
+- **Non-root hosts**: prefix scripts and `docker` with `sudo`; client files are
+  created `root:root 600`, so fetch them with `sudo cat` / `sudo base64` — a plain
+  `scp` as the login user can't read them.
+- **Pending kernel before first deploy**: fresh hosts often have a newer kernel
+  installed awaiting reboot (`/var/run/reboot-required`). Decide up front — reboot
+  into it *before* deploy (the module is then built for the kernel you'll keep),
+  else a later reboot needs `rebuild-module`. Ensure `linux-headers-$(uname -r)`
+  for the **new** kernel are installed before rebooting.
+- **Inventory ≠ `~/.ssh/config`**: resolve the host from `hosts.yml` and build an
+  explicit `ssh -i <key> <user>@<ip>`; a stale ssh-config alias may point at an
+  old IP.
+- **Restricted-network SNI**: if a client/uplink can't connect but the host is
+  healthy, suspect a blocked camouflage SNI — see **REALITY camouflage** above.
 
 ## Claude Code & Codex
 
