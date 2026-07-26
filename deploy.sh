@@ -240,6 +240,44 @@ if [[ ! -f /etc/modules-load.d/amneziawg.conf ]]; then
   echo amneziawg > /etc/modules-load.d/amneziawg.conf
   log_info "Persisted module autoload: /etc/modules-load.d/amneziawg.conf"
 fi
+
+# ── 3b. Rebuild the module after a kernel upgrade ────────────────────────────
+# modules-load.d only *loads* an existing .ko; it cannot help after a kernel
+# upgrade (unattended-upgrades) + reboot, when no module was ever built for the
+# new kernel and there is no DKMS. The capability-less container then crash-
+# loops. This oneshot runs on boot after docker and, when the module is missing
+# for the running kernel, rebuilds it (stopping/starting the container around
+# the build). At deploy time the module already exists, so it is a no-op.
+#
+# Capture any operator release pin into the unit so a boot rebuild installs the
+# SAME module release this deploy used, not whatever is latest at the next
+# kernel upgrade. Empty when unpinned — rebuild-amneziawg.sh then tracks latest,
+# matching this deploy's own behaviour.
+AWG_RELEASE_ENV=""
+if [[ -n "${AMNEZIAWG_RELEASE:-}" ]]; then
+  AWG_RELEASE_ENV="Environment=AMNEZIAWG_RELEASE=${AMNEZIAWG_RELEASE}"
+fi
+cat > /etc/systemd/system/amneziawg-module.service <<UNIT
+[Unit]
+Description=Ensure the AmneziaWG kernel module matches the running kernel
+# network-online.target: a rebuild fetches sources from GitHub and APT mirrors,
+# so ordering after it avoids failing on a not-yet-ready network at early boot.
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+${AWG_RELEASE_ENV}
+ExecStart=${SCRIPT_DIR}/ensure-amneziawg-module.sh
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable amneziawg-module.service >/dev/null
+log_info "Installed amneziawg-module.service (rebuilds the module after kernel upgrades)."
 echo ""
 
 # ── 4. Build Docker images ───────────────────────────────────────────────────

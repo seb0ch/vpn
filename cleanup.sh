@@ -83,6 +83,16 @@ if [[ -f /etc/systemd/system/vpn-host-firewall.service ]]; then
   log_info "  Removed vpn-host-firewall.service"
 fi
 
+# The boot-time module rebuild unit references this checkout; left enabled it
+# could rebuild AmneziaWG on a future boot after the stack is gone (or fail on
+# the missing checkout).
+if [[ -f /etc/systemd/system/amneziawg-module.service ]]; then
+  systemctl disable amneziawg-module.service 2>/dev/null || true
+  rm -f /etc/systemd/system/amneziawg-module.service
+  systemctl daemon-reload 2>/dev/null || true
+  log_info "  Removed amneziawg-module.service"
+fi
+
 # Drop the INPUT rule if still present (idempotent: -C succeeds only if it exists).
 while iptables -C INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP 2>/dev/null; do
   iptables -D INPUT -s 172.20.0.0/24 -m conntrack --ctstate NEW -j DROP
