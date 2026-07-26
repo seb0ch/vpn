@@ -19,6 +19,55 @@ if ! grep -q '^net.ipv4.ip_forward=1' /etc/sysctl.conf 2>/dev/null; then
   log_info "Made IP forwarding persistent in /etc/sysctl.conf"
 fi
 
+# ── 1b. Size the conntrack table for the VPN hub role ────────────────────────
+# This host NATs many AmneziaWG peers and — when it is an entry/hub — Xray also
+# proxies each client's flows out to other servers; every flow consumes
+# conntrack entries. On low-RAM VPSes the kernel default (~4096) overflows under
+# load, and a full table doesn't just drop packets: the kernel returns EPERM
+# ("operation not permitted") on new locally-originated connections, which
+# silently breaks Xray cross-server routing and DNS. Size it up persistently.
+#
+# Load nf_conntrack now — both to read the kernel's current limits below and to
+# persist the load ordered *before* systemd-sysctl on every boot. Without that,
+# the net.netfilter.* keys don't exist yet when systemd-sysctl runs, so the
+# drop-in is skipped and the limits silently revert to the kernel default until
+# something else loads the module.
+modprobe nf_conntrack 2>/dev/null || true
+echo nf_conntrack > /etc/modules-load.d/vpn-conntrack.conf
+
+# Size UP only. Big-RAM kernels already default higher (262144 is common); pick
+# the larger of our floor and whatever the kernel currently uses so a deploy
+# never shrinks an existing table (which would REDUCE capacity).
+CT_MAX_FLOOR=32768
+CT_HASH_FLOOR=8192
+cur_max="$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo 0)"
+cur_hash="$(cat /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || echo 0)"
+[[ "${cur_max}"  =~ ^[0-9]+$ ]] || cur_max=0
+[[ "${cur_hash}" =~ ^[0-9]+$ ]] || cur_hash=0
+CT_MAX=$(( cur_max  > CT_MAX_FLOOR  ? cur_max  : CT_MAX_FLOOR  ))
+CT_HASH=$(( cur_hash > CT_HASH_FLOOR ? cur_hash : CT_HASH_FLOOR ))
+
+cat > /etc/sysctl.d/99-vpn-conntrack.conf <<CONF
+net.netfilter.nf_conntrack_max = ${CT_MAX}
+net.netfilter.nf_conntrack_tcp_timeout_established = 86400
+net.netfilter.nf_conntrack_udp_timeout = 60
+net.netfilter.nf_conntrack_udp_timeout_stream = 180
+CONF
+# Bucket count is fixed at module-load time; sysctl only sizes nf_conntrack_max.
+cat > /etc/modprobe.d/vpn-conntrack.conf <<CONF
+options nf_conntrack hashsize=${CT_HASH}
+CONF
+
+# Apply live too (best-effort; the files above are what persists across reboots).
+if [[ -d /proc/sys/net/netfilter ]]; then
+  sysctl -q -p /etc/sysctl.d/99-vpn-conntrack.conf || true
+  if [[ -w /sys/module/nf_conntrack/parameters/hashsize && "${CT_HASH}" -gt "${cur_hash}" ]]; then
+    echo "${CT_HASH}" > /sys/module/nf_conntrack/parameters/hashsize || true
+  fi
+fi
+log_info "Conntrack table sized for the hub role (nf_conntrack_max=${CT_MAX})."
+echo ""
+
 # ── 2. Verify Docker is installed ────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
   log_error "Docker is not installed. Please install Docker and Docker Compose first."

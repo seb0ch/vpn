@@ -14,8 +14,9 @@ echo "  • VPN containers (vpn-amneziawg, vpn-xray, vpn-dns) and their Docker n
 echo "  • Docker images:  amneziawg, xray, dns (all tags)"
 echo "  • Generated server configs and keys"
 echo "  • All client configs and QR codes"
-echo "  • Host artifacts: vpn-host-firewall.service, its INPUT rule, and"
-echo "    /etc/modules-load.d/amneziawg.conf"
+echo "  • Host artifacts: vpn-host-firewall.service + its INPUT rule,"
+echo "    amneziawg-module.service, the conntrack drop-ins,"
+echo "    and /etc/modules-load.d/amneziawg.conf"
 echo ""
 echo "Existing VPN clients will stop working immediately."
 echo ""
@@ -92,6 +93,15 @@ if [[ -f /etc/modules-load.d/amneziawg.conf ]]; then
   rm -f /etc/modules-load.d/amneziawg.conf
   log_info "  Removed /etc/modules-load.d/amneziawg.conf (module stays loaded until reboot)"
 fi
+
+# Host-wide conntrack tuning drop-ins. Removing the files restores the kernel
+# defaults on the next reboot; the raised live limits persist until then.
+for f in /etc/sysctl.d/99-vpn-conntrack.conf /etc/modprobe.d/vpn-conntrack.conf /etc/modules-load.d/vpn-conntrack.conf; do
+  if [[ -f "${f}" ]]; then
+    rm -f "${f}"
+    log_info "  Removed ${f} (live conntrack limits persist until reboot)"
+  fi
+done
 
 echo ""
 log_info "Cleanup complete. The repository is back to a clean state."
