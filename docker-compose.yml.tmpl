@@ -10,8 +10,11 @@ networks:
         - subnet: 172.20.0.0/24
 
 services:
+  # >>> service: dns
   # DNS — dnscrypt-proxy, authenticates and encrypts all DNS queries.
   # Not published to the host; reachable only within the vpn network.
+  # Deployed with AmneziaWG only: AWG clients are DNAT'ed here, while Xray
+  # resolves through the public servers in its own config.json.
   dns:
     image: dns:__DNS_TAG__
     container_name: vpn-dns
@@ -32,8 +35,12 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+  # <<< service: dns
 
+  # >>> service: amneziawg
   # AmneziaWG — obfuscated WireGuard VPN server.
+  # Rendered only when ENABLE_AMNEZIAWG is on; deploy.sh drops everything
+  # between these markers otherwise (see lib/common.sh:render_compose).
   amneziawg:
     image: amneziawg:__AWG_TAG__
     container_name: vpn-amneziawg
@@ -62,8 +69,12 @@ services:
     depends_on:
       dns:
         condition: service_healthy
+  # <<< service: amneziawg
 
+  # >>> service: xray
   # Xray REALITY — VLESS proxy disguised as HTTPS traffic to cloudflare.com.
+  # Rendered only when ENABLE_XRAY is on; deploy.sh drops everything between
+  # these markers otherwise (see lib/common.sh:render_compose).
   xray:
     image: xray:__XRAY_TAG__
     container_name: vpn-xray
@@ -84,6 +95,9 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+    # >>> needs: dns
     depends_on:
       dns:
         condition: service_healthy
+    # <<< needs: dns
+  # <<< service: xray

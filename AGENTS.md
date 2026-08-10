@@ -32,6 +32,15 @@ clone`:
   logic is `lib/versions.sh`.
 - The Xray **geo databases are intentionally unpinned / unchecksummed** (always
   latest). This is a deliberate decision — do not "fix" it by adding pins.
+- **Both VPN components are optional per host.** `ENABLE_AMNEZIAWG` /
+  `ENABLE_XRAY` (default `1`) select what `deploy.sh` builds, keys, and renders
+  into `docker-compose.yml`; disabling both is an error. **`dns` follows
+  AmneziaWG** (only AWG clients are DNAT'ed to it; Xray uses the public
+  resolvers in its own config), so an Xray-only host runs one container. The **generated
+  `docker-compose.yml` is the source of truth** for what a host runs — scripts
+  ask `component_enabled <svc> <file>` (`lib/common.sh`) rather than re-reading
+  the deploy-time env. Optional services live between
+  `# >>> service: x` / `# <<< service: x` markers in the compose template.
 - **AmneziaWG multi-hop is not implemented.** Cross-server per-client landing
   ("connect A, exit B") is **Xray-only** (`xray/add-upstream.sh` +
   `xray/set-route.sh`). An AWG profile always exits at the server the client

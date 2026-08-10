@@ -27,11 +27,18 @@ SSH. You translate a plain request ("deploy fra", "add login alice on us",
    service names are `amneziawg` / `xray` / `dns` (use these with
    `docker compose ...`). Images are tagged with their release (`xray:<ver>`),
    never `:latest`.
-4. **Cross-server per-client landing is Xray-only.** "Client connects to A but
+4. **A host may deploy only one VPN component.** `ENABLE_AMNEZIAWG=0` /
+   `ENABLE_XRAY=0` at deploy time drop that component. **`dns` follows
+   AmneziaWG** (only AWG clients are DNAT'ed to it), so an Xray-only host runs
+   exactly one container, `vpn-xray`. Check what a host actually runs before
+   acting on it — the generated `/usr/src/vpn/docker-compose.yml` lists the
+   deployed services (a missing `vpn-amneziawg`/`vpn-dns` on an Xray-only host
+   is **correct**, not a fault).
+5. **Cross-server per-client landing is Xray-only.** "Client connects to A but
    lands in B" works via Xray chaining. The equivalent for AmneziaWG (multi-hop)
    is **not implemented** — never promise it. An AWG profile always exits at the
    server the client connects to.
-5. Never commit or print secrets (keys, `hosts.yml`). Client configs/QRs live in
+6. Never commit or print secrets (keys, `hosts.yml`). Client configs/QRs live in
    `clients/` on each host (gitignored).
 
 ## Host inventory
@@ -176,34 +183,47 @@ keys; offer `ssh-copy-id` to migrate a password host to a key.
 5. Deploy: `$SSH 'cd /usr/src/vpn && ./deploy.sh'`. To pin versions, prefix env
    vars: `XRAY_RELEASE=v26.6.1 AMNEZIAWG_RELEASE=... DNSCRYPT_RELEASE=... ./deploy.sh`.
    Default (no pins) = latest upstream release of each.
+   **Single-protocol host**: prefix `ENABLE_AMNEZIAWG=0` (Xray only) or
+   `ENABLE_XRAY=0` (AmneziaWG only). Both `0` is refused. Ask the user which
+   protocols they want if they say "only VLESS/Xray" or "no WireGuard".
 6. **Verify** (run `status` below). Report the printed firewall ports (AWG UDP +
-   443/tcp) the user must open in their cloud firewall.
+   443/tcp — only the enabled ones are printed) the user must open in their
+   cloud firewall.
 
 A redeploy is idempotent: keys/clients are preserved, images rebuilt at the
 resolved release. The kernel module is NOT rebuilt if already loaded — use
-`rebuild-module` for that.
+`rebuild-module` for that. Re-deploying with a changed `ENABLE_*` flag adds or
+drops that component (a disabled one loses its container and, for AmneziaWG, its
+boot-time module units; keys/clients stay on disk).
 
 ### status `<host>`
 
 ```bash
 $SSH 'docker ps --format "{{.Names}} | {{.Image}} | {{.Status}}";
+      echo -n "deployed: "; grep -E "^  (amneziawg|xray|dns):$" /usr/src/vpn/docker-compose.yml | tr -d " :" | tr "\n" " "; echo;
       echo -n "module: "; grep -q "^amneziawg " /proc/modules && echo LOADED || echo NOT-LOADED;
       echo -n "awg peers: "; docker exec vpn-amneziawg awg show awg0 peers 2>/dev/null | wc -l;
       echo -n "xray clients: "; docker exec vpn-xray grep -c "\"email\"" /etc/xray/config.json 2>/dev/null;
       echo -n "egress IP: "; curl -s --max-time 8 https://api.ipify.org; echo'
 ```
 
-Healthy = three `vpn-*` containers `Up ... (healthy)`, module LOADED. Image tags
-show the deployed component versions. `awg peers` / `xray clients` count the
-AmneziaWG peers and Xray clients respectively (use them to confirm a client
-was added/removed on each side).
+Healthy = **every deployed** `vpn-*` container `Up ... (healthy)`. Read the
+`deployed:` line first: an Xray-only host has no `vpn-amneziawg` and no
+`vpn-dns`, and needs no module (module NOT-LOADED is fine there, and `awg peers`
+reads 0); an AmneziaWG-only host has no `vpn-xray`. Image tags show the deployed component
+versions. `awg peers` / `xray clients` count the AmneziaWG peers and Xray clients
+respectively (use them to confirm a client was added/removed on each side).
 
 ### add-client / login `<name> <host>` [proto]
 
 ```bash
-$SSH "cd /usr/src/vpn && ./add-client.sh <name>"          # both AWG + Xray
+$SSH "cd /usr/src/vpn && ./add-client.sh <name>"          # every deployed component
 # proto-specific: ./amneziawg/add-client.sh <name>  OR  ./xray/add-client.sh <name>
 ```
+
+The wrapper reads `docker-compose.yml` and only touches components this host
+deploys — on an Xray-only host it produces just the VLESS profile (that is
+expected; don't "fix" the missing `.conf` by running the AWG script).
 
 **What to hand the user** — fetch the files and deliver per protocol. The QR
 images are the easy path for phones (scan in the app); the file/link are for
@@ -383,6 +403,11 @@ hosts whose login user isn't root. Locking the password does not break `sudo`
   release; the running version is visible via `docker images` / the `status` op.
   There is no lock file and no `--refresh`.
 - **AWG multi-hop** is a deferred feature — cross-server landing is Xray-only.
+- **Single-protocol hosts**: before reporting a host as broken, check which
+  services its `docker-compose.yml` declares — a deploy with `ENABLE_AMNEZIAWG=0`
+  legitimately has no `vpn-amneziawg`, no `vpn-dns`, no kernel module, and no
+  `amneziawg-module.service`. Turning a component back on is a plain re-deploy
+  with the flag at `1`; the old keys/clients come back with it.
 - **git / docker compose may be missing** on a fresh host. Install `git`
   (`apt-get install -y git`) before `git clone`. If Docker is present but
   `docker compose version` fails, run `./docker-install.sh` — it adds the compose

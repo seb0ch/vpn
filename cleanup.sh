@@ -10,7 +10,8 @@ source "${SCRIPT_DIR}/lib/common.sh"
 # ── Confirmation ──────────────────────────────────────────────────────────────
 echo ""
 echo "This will permanently remove:"
-echo "  • VPN containers (vpn-amneziawg, vpn-xray, vpn-dns) and their Docker network"
+echo "  • VPN containers (whichever of vpn-amneziawg / vpn-xray / vpn-dns are"
+echo "    deployed) and their Docker network"
 echo "  • Docker images:  amneziawg, xray, dns (all tags)"
 echo "  • Generated server configs and keys"
 echo "  • All client configs and QR codes"
@@ -58,7 +59,7 @@ done
 # ── Remove generated configs and keys ─────────────────────────────────────────
 log_info "Removing generated configs, keys, and client files…"
 
-rm -f docker-compose.yml
+rm -f docker-compose.yml docker-compose.yml.new
 rm -rf clients
 rm -f amneziawg/conf/awg0.conf
 rm -f amneziawg/conf/awg0.conf.lock

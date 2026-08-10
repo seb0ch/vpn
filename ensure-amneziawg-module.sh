@@ -20,6 +20,13 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 readonly COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
 
+# AmneziaWG switched off since this unit was installed (ENABLE_AMNEZIAWG=0) →
+# nothing to keep in sync. deploy.sh removes the unit in that case, so this is
+# only a belt-and-braces guard for a stale unit.
+if [[ -f "${COMPOSE_FILE}" ]] && ! component_enabled amneziawg "${COMPOSE_FILE}"; then
+  exit 0
+fi
+
 # Already loaded → nothing to do (the common, healthy-boot case).
 if grep -q '^amneziawg ' /proc/modules; then
   exit 0

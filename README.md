@@ -4,7 +4,7 @@
 
 > For the paranoid sysadmin who doesn't trust pre-built binaries, considers "just use a commercial VPN" a personal insult, and won't sleep until every line of code has been read, every key has been generated on hardware they own, and every packet goes exactly where they said it goes. Everything here is built from source. No black boxes. Sleep tight :smile:
 
-Self-hosted VPN server combining **AmneziaWG** (obfuscated WireGuard) and **Xray REALITY** (VLESS proxy), with an internal **dnscrypt-proxy** resolver — all orchestrated via Docker Compose.
+Self-hosted VPN server combining **AmneziaWG** (obfuscated WireGuard) and **Xray REALITY** (VLESS proxy), with an internal **dnscrypt-proxy** resolver — all orchestrated via Docker Compose. Both VPN components ship enabled; either can be switched off per host (see [Choosing components](#choosing-components)).
 
 ## Architecture
 
@@ -22,13 +22,13 @@ Self-hosted VPN server combining **AmneziaWG** (obfuscated WireGuard) and **Xray
 └──────────────────────────────────────────────────────┘
 ```
 
-| Service       | Role                                                     | Exposed Port     |
-|---------------|----------------------------------------------------------|------------------|
-| **DNS**       | dnscrypt-proxy — encrypts and authenticates DNS queries  | 53 (Docker only) |
-| **AmneziaWG** | Obfuscated WireGuard VPN server                          | random/udp       |
-| **Xray**      | VLESS + REALITY proxy                                    | 443/tcp          |
+| Service       | Role                                                     | Exposed Port     | Optional |
+|---------------|----------------------------------------------------------|------------------|----------|
+| **DNS**       | dnscrypt-proxy — encrypts and authenticates DNS queries  | 53 (Docker only) | follows AmneziaWG |
+| **AmneziaWG** | Obfuscated WireGuard VPN server                          | random/udp       | `ENABLE_AMNEZIAWG=0` |
+| **Xray**      | VLESS + REALITY proxy                                    | 443/tcp          | `ENABLE_XRAY=0` |
 
-All VPN clients are forced to use the internal DNS resolver via iptables DNAT — DNS queries never leave the server uncontrolled.
+All AmneziaWG clients are forced to use the internal DNS resolver via iptables DNAT — their DNS queries never leave the server uncontrolled. Xray clients resolve through the public servers configured in `config.json`, which is why `dns` is deployed only alongside AmneziaWG.
 
 ## Prerequisites
 
@@ -70,14 +70,14 @@ sudo ./deploy.sh
 This script will:
 
 1. Verify Docker and Docker Compose are installed
-2. Resolve each third-party component to a release (see [Component versions](#component-versions))
-3. Build all images from source, tagged with their release (`amneziawg:<ver>`, `xray:<ver>`, `dns:<ver>`); the kernel module is compiled against the host kernel
+2. Resolve each **enabled** third-party component to a release (see [Component versions](#component-versions))
+3. Build the images from source, tagged with their release (`amneziawg:<ver>`, `xray:<ver>`, `dns:<ver>`); the kernel module is compiled against the host kernel
 4. Generate AmneziaWG server keys, random obfuscation parameters, and a random UDP port (49152–65535)
-5. Generate `docker-compose.yml` from the template
+5. Generate `docker-compose.yml` from the template, containing only the enabled services
 6. Generate Xray REALITY X25519 keys and Short ID
 7. Start all services with `docker compose up -d` (containers are named `vpn-amneziawg`, `vpn-xray`, `vpn-dns`)
 
-At the end, the script prints the two ports you must open on your cloud firewall.
+Steps 3–6 skip whatever is switched off — see [Choosing components](#choosing-components). At the end, the script prints the ports you must open on your cloud firewall.
 
 ### Component versions
 
@@ -113,9 +113,52 @@ sudo XRAY_RELEASE=v26.6.1 ./deploy.sh
   their latest and are intentionally not pinned; they refresh whenever the Xray
   image is rebuilt.
 
+### Choosing components
+
+Both VPN components are deployed by default. Set a flag to `0` to run a
+single-protocol host — e.g. when you only ever hand out VLESS links, or when the
+only thing that gets through a given network is AmneziaWG:
+
+```bash
+sudo ENABLE_AMNEZIAWG=0 ./deploy.sh    # Xray REALITY only (DNS goes with AmneziaWG)
+sudo ENABLE_XRAY=0 ./deploy.sh         # AmneziaWG + DNS only
+```
+
+| Flag | Default | Values |
+|------|---------|--------|
+| `ENABLE_AMNEZIAWG` | `1` | `1/0`, `true/false`, `yes/no`, `on/off` (case-insensitive) |
+| `ENABLE_XRAY` | `1` | same |
+
+Disabling **both** is rejected — there would be nothing to deploy; use
+`cleanup.sh` to tear a host down instead.
+
+**`dns` follows AmneziaWG** and has no flag of its own: only AWG clients are
+DNAT'ed to the internal resolver, while Xray resolves through the public servers
+in its own `config.json`. So `ENABLE_AMNEZIAWG=0` also drops the `dns` container
+(and the `depends_on` that referenced it) — an Xray-only host runs a **single**
+container, `vpn-xray`.
+
+A disabled component means:
+
+- its image is not built, its keys are not generated, and its service is not
+  rendered into `docker-compose.yml`;
+- on a re-deploy its container is removed (`docker compose up -d --remove-orphans`);
+- for AmneziaWG the host-level bits go too — `amneziawg-module.service` and
+  `/etc/modules-load.d/amneziawg.conf` — so a reboot no longer loads or rebuilds
+  the kernel module (an already-loaded module stays until the next reboot);
+- **keys, live configs, and client files are left untouched.** Re-enabling the
+  component (`sudo ./deploy.sh` with the flag back at `1`) brings back exactly
+  the same peers/clients. Use `cleanup.sh` to erase them.
+
+The generated `docker-compose.yml` is the source of truth for what a host runs:
+`add-client.sh` / `remove-client.sh` read it and act only on the deployed
+components, so `./add-client.sh alice` on an Xray-only host creates just the
+VLESS profile.
+
 ## Client Management
 
-**Add a client** to both AmneziaWG and Xray simultaneously:
+**Add a client** to both AmneziaWG and Xray simultaneously (or to whichever
+single component the host deploys — see [Choosing components](#choosing-components)):
 
 ```bash
 ./add-client.sh <name>
@@ -170,7 +213,8 @@ sudo ./deploy.sh
   release (latest by default, or your `*_RELEASE` pins), so a newer upstream
   release is picked up; the image tag reflects the deployed version;
 - **re-renders** `docker-compose.yml` from the template, so changes to container
-  capabilities, mounts, or ports take effect;
+  capabilities, mounts, or ports take effect — and so does a changed
+  `ENABLE_AMNEZIAWG` / `ENABLE_XRAY` (scenario 8);
 - **re-applies** the host `INPUT` rule and `/etc/modules-load.d/amneziawg.conf` if
   they are missing.
 
@@ -307,6 +351,30 @@ Apply it:
 > even a non-TLS port (e.g. 22) hangs from the client's network but works from
 > elsewhere, the IP itself is filtered — use a different address.
 
+### 8. Turn a component off (or back on)
+
+A host can run a single protocol. Re-deploy with the flag — nothing else to do:
+
+```bash
+sudo ENABLE_AMNEZIAWG=0 ./deploy.sh    # drop AmneziaWG (and DNS), keep Xray REALITY
+sudo ./deploy.sh                       # both back on (flags default to 1)
+```
+
+The re-deploy removes the disabled service's container, stops building its
+image, and — for AmneziaWG — removes `amneziawg-module.service` and
+`/etc/modules-load.d/amneziawg.conf` so the kernel module is no longer loaded or
+rebuilt at boot. Keys, live configs, and client files survive, so switching back
+on restores the same peers/clients. Details and accepted values:
+[Choosing components](#choosing-components).
+
+Two notes:
+
+- Existing profiles for the component you disabled **stop working** — that is
+  the point. Their files stay in `clients/` until you delete them (or run
+  `cleanup.sh`).
+- Removing the last enabled component is refused; tear the host down with
+  `cleanup.sh` instead.
+
 ## Operate with an AI assistant (Claude Code / Codex)
 
 The repo ships a **`vpn` operator skill** — a runbook that lets Claude Code or
@@ -342,6 +410,7 @@ a password** (`sshpass`; the assistant warns and suggests `ssh-copy-id`).
 |---------|---------|
 | "add a host `de`, `de.example.com`, user root, key `~/.ssh/id_ed25519`" | appends the host to `~/.config/vpn/hosts.yml` (creating it if absent), offers a connectivity check |
 | "deploy the VPN on `de`" | rsync/clone repo → swap check → `docker-install.sh` → `deploy.sh` → verifies containers/module, prints the ports to open |
+| "deploy `de`, Xray only" | same, with `ENABLE_AMNEZIAWG=0` — no kernel module, no AWG container |
 | "status of `de`" | containers, module, image versions, AWG-peer / Xray-client counts, egress IP |
 | "add a login `alice` on `us`" | `add-client.sh alice`, hands you the `.conf` / VLESS link / QR |
 | "I need a login that connects to `us` and exits in `de`" | asks to confirm entry/exit, sets up **Xray** chaining (`us` → `de`) and gives you the Xray profile (cross-server landing is Xray-only) |
@@ -412,9 +481,9 @@ VPN client → awg0 tunnel (10.8.0.0/24)
 ├── rebuild-amneziawg.sh    # Rebuild and reload the AmneziaWG kernel module after a host kernel upgrade
 ├── mtu.sh                  # macOS helper to estimate path MTU and suggest AWG MTU
 ├── cleanup.sh              # Remove all containers, images, keys, and generated configs
-├── docker-compose.yml.tmpl # Template; docker-compose.yml is generated and gitignored
+├── docker-compose.yml.tmpl # Template; docker-compose.yml is generated and gitignored. Optional services sit between `# >>> service: x` / `# <<< service: x` markers
 ├── lib/
-│   ├── common.sh           # Shared utilities (logging, validation, IP fetch)
+│   ├── common.sh           # Shared utilities (logging, validation, IP fetch, component selection)
 │   └── versions.sh         # Resolves component release tags -> commit SHAs (git ls-remote)
 ├── amneziawg/
 │   ├── Dockerfile          # Builds awg-tools (awg, awg-quick) from a resolved release (AWG_TOOLS_REF); the kernel module is built on the host by deploy.sh / rebuild-amneziawg.sh

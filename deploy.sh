@@ -9,6 +9,33 @@ source "${SCRIPT_DIR}/lib/common.sh"
 # shellcheck source=lib/versions.sh
 source "${SCRIPT_DIR}/lib/versions.sh"
 
+# ── 0. Component selection ───────────────────────────────────────────────────
+# Both client-facing components are deployed by default; either can be switched
+# off for a single-protocol host by exporting ENABLE_AMNEZIAWG=0 or ENABLE_XRAY=0.
+# Only what is enabled gets built, keyed, and rendered into docker-compose.yml.
+#
+# The dns service follows AmneziaWG rather than having a flag of its own: only
+# AWG clients are DNAT'ed to it (see awg0.tmpl), while Xray resolves through the
+# public servers configured in its own config.json. An Xray-only host therefore
+# runs a single container.
+for _flag in ENABLE_AMNEZIAWG ENABLE_XRAY; do
+  if ! _val="$(parse_bool "${!_flag:-}" 1)"; then
+    log_error "${_flag}='${!_flag}' is not a boolean — use 1/0, true/false, yes/no, or on/off."
+    exit 1
+  fi
+  printf -v "${_flag}" '%s' "${_val}"
+done
+unset _flag _val
+
+if [[ "${ENABLE_AMNEZIAWG}" == "0" && "${ENABLE_XRAY}" == "0" ]]; then
+  log_error "ENABLE_AMNEZIAWG=0 and ENABLE_XRAY=0 leave nothing to deploy."
+  log_error "Enable at least one component, or run cleanup.sh to tear the stack down."
+  exit 1
+fi
+
+log_info "Components: AmneziaWG $([[ "${ENABLE_AMNEZIAWG}" == "1" ]] && echo enabled || echo DISABLED), Xray $([[ "${ENABLE_XRAY}" == "1" ]] && echo enabled || echo DISABLED), dns $([[ "${ENABLE_AMNEZIAWG}" == "1" ]] && echo enabled || echo "DISABLED (follows AmneziaWG)")"
+echo ""
+
 # ── 1. Enable IP forwarding on the host ──────────────────────────────────────
 if [[ "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)" != "1" ]]; then
   log_info "Enabling IP forwarding…"
@@ -143,32 +170,50 @@ resolve_into() {
   printf -v "$2" '%s' "${out##*$'\t'}"
 }
 
-resolve_into XRAY_TAG     XRAY_SHA     "Xray"           "${REPO_XRAY}"     "${XRAY_RELEASE:-}"
-resolve_into DNSCRYPT_TAG DNSCRYPT_SHA "dnscrypt-proxy" "${REPO_DNSCRYPT}" "${DNSCRYPT_RELEASE:-}"
+XRAY_TAG=""; XRAY_SHA=""
+AWG_TOOLS_TAG=""; AWG_TOOLS_SHA=""
+DNSCRYPT_TAG=""; DNSCRYPT_SHA=""
+
+if [[ "${ENABLE_XRAY}" == "1" ]]; then
+  resolve_into XRAY_TAG XRAY_SHA "Xray" "${REPO_XRAY}" "${XRAY_RELEASE:-}"
+fi
+# dnscrypt-proxy is only deployed alongside AmneziaWG (see section 0).
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
+  resolve_into DNSCRYPT_TAG DNSCRYPT_SHA "dnscrypt-proxy" "${REPO_DNSCRYPT}" "${DNSCRYPT_RELEASE:-}"
+fi
 
 # AmneziaWG userspace tools — this is what the `amneziawg` IMAGE contains, so it
 # is what the image is tagged with. AMNEZIAWG_RELEASE pins it; if the tools repo
 # has no such tag, fall back to the tools' own latest. (The kernel MODULE is a
 # host artifact resolved separately in section 3, only when it is actually built,
 # so a re-deploy doesn't need network to resolve a module it won't rebuild.)
-if [[ -n "${AMNEZIAWG_RELEASE:-}" ]]; then
-  if AWG_TOOLS_OUT="$(resolve_ref "${REPO_AWG_TOOLS}" "${AMNEZIAWG_RELEASE}")"; then
-    IFS=$'\t' read -r AWG_TOOLS_TAG AWG_TOOLS_SHA <<<"${AWG_TOOLS_OUT}"
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
+  if [[ -n "${AMNEZIAWG_RELEASE:-}" ]]; then
+    if AWG_TOOLS_OUT="$(resolve_ref "${REPO_AWG_TOOLS}" "${AMNEZIAWG_RELEASE}")"; then
+      IFS=$'\t' read -r AWG_TOOLS_TAG AWG_TOOLS_SHA <<<"${AWG_TOOLS_OUT}"
+    else
+      log_warn "amneziawg-tools has no tag '${AMNEZIAWG_RELEASE}' — using its latest."
+      resolve_into AWG_TOOLS_TAG AWG_TOOLS_SHA "amneziawg-tools" "${REPO_AWG_TOOLS}" ""
+    fi
   else
-    log_warn "amneziawg-tools has no tag '${AMNEZIAWG_RELEASE}' — using its latest."
     resolve_into AWG_TOOLS_TAG AWG_TOOLS_SHA "amneziawg-tools" "${REPO_AWG_TOOLS}" ""
   fi
-else
-  resolve_into AWG_TOOLS_TAG AWG_TOOLS_SHA "amneziawg-tools" "${REPO_AWG_TOOLS}" ""
 fi
 
-log_info "  xray            ${XRAY_TAG}"
-log_info "  amneziawg-tools ${AWG_TOOLS_TAG} (image tag)"
-log_info "  dnscrypt-proxy  ${DNSCRYPT_TAG}"
+[[ "${ENABLE_XRAY}" == "1" ]]      && log_info "  xray            ${XRAY_TAG}"
+[[ "${ENABLE_AMNEZIAWG}" == "1" ]] && log_info "  amneziawg-tools ${AWG_TOOLS_TAG} (image tag)"
+[[ "${ENABLE_AMNEZIAWG}" == "1" ]] && log_info "  dnscrypt-proxy  ${DNSCRYPT_TAG}"
 echo ""
 
 # ── 3. Build and install AmneziaWG kernel module ────────────────────────────
-if grep -q '^amneziawg ' /proc/modules; then
+if [[ "${ENABLE_AMNEZIAWG}" == "0" ]]; then
+  # Only skip the build here. The host-level AmneziaWG bits (boot unit,
+  # modules-load.d) are torn down in section 9, after the new state is actually
+  # running: a build or start failure in between would otherwise leave the old
+  # container deployed but unable to load its module after a reboot.
+  log_info "AmneziaWG disabled (ENABLE_AMNEZIAWG=0) — skipping module and container."
+  echo ""
+elif grep -q '^amneziawg ' /proc/modules; then
   log_info "AmneziaWG kernel module already loaded — skipping build."
   log_info "(To move to a newer module release, run rebuild-amneziawg.sh.)"
 elif modprobe amneziawg 2>/dev/null; then
@@ -236,7 +281,7 @@ fi
 
 # Persist module loading across host reboots; without this the container
 # cannot recover after a reboot once CAP_SYS_MODULE is dropped.
-if [[ ! -f /etc/modules-load.d/amneziawg.conf ]]; then
+if [[ "${ENABLE_AMNEZIAWG}" == "1" && ! -f /etc/modules-load.d/amneziawg.conf ]]; then
   echo amneziawg > /etc/modules-load.d/amneziawg.conf
   log_info "Persisted module autoload: /etc/modules-load.d/amneziawg.conf"
 fi
@@ -253,6 +298,9 @@ fi
 # SAME module release this deploy used, not whatever is latest at the next
 # kernel upgrade. Empty when unpinned — rebuild-amneziawg.sh then tracks latest,
 # matching this deploy's own behaviour.
+# The whole block below is guarded; its body stays at column 0 so the unit
+# heredoc keeps reading exactly as it is written to disk.
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
 AWG_RELEASE_ENV=""
 if [[ -n "${AMNEZIAWG_RELEASE:-}" ]]; then
   AWG_RELEASE_ENV="Environment=AMNEZIAWG_RELEASE=${AMNEZIAWG_RELEASE}"
@@ -279,50 +327,107 @@ systemctl daemon-reload
 systemctl enable amneziawg-module.service >/dev/null
 log_info "Installed amneziawg-module.service (rebuilds the module after kernel upgrades)."
 echo ""
+fi
 
 # ── 4. Build Docker images ───────────────────────────────────────────────────
 # Each image is tagged with its component release; sources are fetched by the
 # resolved commit SHA passed as a build-arg. The xray build gets a per-deploy
 # GEO_BUST nonce so the (unpinned) geo databases are always re-pulled fresh.
 log_info "Building Docker images…"
-docker build --build-arg AWG_TOOLS_REF="${AWG_TOOLS_SHA}" -t "amneziawg:${AWG_TOOLS_TAG}" ./amneziawg
-docker build --build-arg XRAY_REF="${XRAY_SHA}" --build-arg GEO_BUST="$(date +%s)" -t "xray:${XRAY_TAG}" ./xray
-docker build --build-arg DNSCRYPT_REF="${DNSCRYPT_SHA}"   -t "dns:${DNSCRYPT_TAG}"        ./dns
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
+  docker build --build-arg AWG_TOOLS_REF="${AWG_TOOLS_SHA}" -t "amneziawg:${AWG_TOOLS_TAG}" ./amneziawg
+fi
+if [[ "${ENABLE_XRAY}" == "1" ]]; then
+  docker build --build-arg XRAY_REF="${XRAY_SHA}" --build-arg GEO_BUST="$(date +%s)" -t "xray:${XRAY_TAG}" ./xray
+fi
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
+  docker build --build-arg DNSCRYPT_REF="${DNSCRYPT_SHA}" -t "dns:${DNSCRYPT_TAG}" ./dns
+fi
 
 # ── 5. AmneziaWG keys ────────────────────────────────────────────────────────
-if [[ ! -f amneziawg/conf/server_private.key ]]; then
-  log_info "Generating AmneziaWG server keys…"
-  AMNEZIAWG_IMAGE="amneziawg:${AWG_TOOLS_TAG}" ./amneziawg/gen-keys.sh
-else
-  log_info "AmneziaWG keys already exist — skipping."
-  log_info "(Delete amneziawg/conf/server_private.key to regenerate.)"
+AWG_PORT=""
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
+  if [[ ! -f amneziawg/conf/server_private.key ]]; then
+    log_info "Generating AmneziaWG server keys…"
+    AMNEZIAWG_IMAGE="amneziawg:${AWG_TOOLS_TAG}" ./amneziawg/gen-keys.sh
+  else
+    log_info "AmneziaWG keys already exist — skipping."
+    log_info "(Delete amneziawg/conf/server_private.key to regenerate.)"
+  fi
+
+  AWG_PORT=$(grep "^ListenPort" amneziawg/conf/awg0.conf | awk '{print $3}')
+  if [[ -z "${AWG_PORT}" ]]; then
+    log_error "Could not read ListenPort from amneziawg/conf/awg0.conf"
+    exit 1
+  fi
 fi
 
 # ── 6. docker-compose.yml ────────────────────────────────────────────────────
-AWG_PORT=$(grep "^ListenPort" amneziawg/conf/awg0.conf | awk '{print $3}')
-if [[ -z "${AWG_PORT}" ]]; then
-  log_error "Could not read ListenPort from amneziawg/conf/awg0.conf"
-  exit 1
-fi
-sed -e "s/AWG_PORT/${AWG_PORT}/g" \
-    -e "s/__AWG_TAG__/${AWG_TOOLS_TAG}/g" \
-    -e "s/__XRAY_TAG__/${XRAY_TAG}/g" \
-    -e "s/__DNS_TAG__/${DNSCRYPT_TAG}/g" \
-    docker-compose.yml.tmpl > docker-compose.yml
-log_info "Generated docker-compose.yml (AWG port ${AWG_PORT})"
+# Disabled components are dropped from the rendered file, which then becomes the
+# source of truth for what is deployed (add-client.sh and friends read it).
+#
+# It is rendered to a staging path and only published once the new state is
+# actually running (section 8). A half-finished deploy must never leave a
+# docker-compose.yml that claims a component is gone while its container is
+# still up — remove-client.sh trusts this file and would skip revoking a live
+# credential.
+DISABLED_SERVICES=""
+# dns goes with amneziawg — and so does every fragment marked `needs: dns`,
+# such as the xray service's depends_on.
+[[ "${ENABLE_AMNEZIAWG}" == "0" ]] && DISABLED_SERVICES="amneziawg,dns"
+[[ "${ENABLE_XRAY}"      == "0" ]] && DISABLED_SERVICES="${DISABLED_SERVICES}${DISABLED_SERVICES:+,}xray"
+
+COMPOSE_STAGED="docker-compose.yml.new"
+trap 'rm -f "${SCRIPT_DIR}/${COMPOSE_STAGED}"' EXIT
+
+render_compose docker-compose.yml.tmpl "${DISABLED_SERVICES}" \
+  | sed -e "s/AWG_PORT/${AWG_PORT}/g" \
+        -e "s/__AWG_TAG__/${AWG_TOOLS_TAG}/g" \
+        -e "s/__XRAY_TAG__/${XRAY_TAG}/g" \
+        -e "s/__DNS_TAG__/${DNSCRYPT_TAG}/g" \
+  > "${COMPOSE_STAGED}"
+log_info "Rendered docker-compose.yml${AWG_PORT:+ (AWG port ${AWG_PORT})}"
 
 # ── 7. Xray keys ─────────────────────────────────────────────────────────────
-if [[ ! -f xray/conf/reality_keys.txt ]]; then
-  log_info "Generating Xray REALITY keys…"
-  XRAY_IMAGE="xray:${XRAY_TAG}" ./xray/gen-keys.sh
-else
-  log_info "Xray keys already exist — skipping."
-  log_info "(Delete xray/conf/reality_keys.txt to regenerate.)"
+if [[ "${ENABLE_XRAY}" == "1" ]]; then
+  if [[ ! -f xray/conf/reality_keys.txt ]]; then
+    log_info "Generating Xray REALITY keys…"
+    XRAY_IMAGE="xray:${XRAY_TAG}" ./xray/gen-keys.sh
+  else
+    log_info "Xray keys already exist — skipping."
+    log_info "(Delete xray/conf/reality_keys.txt to regenerate.)"
+  fi
 fi
 
 # ── 8. Start services ────────────────────────────────────────────────────────
+# Converge against the staged file first: --remove-orphans drops the container
+# of a component this deploy turned off (without it a disabled service would
+# keep running from the previous run). Only once that succeeded is the file
+# published as docker-compose.yml — so the on-disk description of the host
+# never runs ahead of what is actually deployed.
 log_info "Starting services…"
-docker compose up -d
+docker compose -f "${COMPOSE_STAGED}" up -d --remove-orphans
+mv -f "${COMPOSE_STAGED}" docker-compose.yml
+log_info "Published docker-compose.yml"
+
+# ── 9. Retire host artifacts of disabled components ──────────────────────────
+# Now that the AmneziaWG container is confirmed gone, drop the host-level bits a
+# previous deploy installed, so no reboot loads or rebuilds a module nothing
+# uses. Keys, awg0.conf, and client files are deliberately left in place: they
+# are secrets this script must not destroy, and re-enabling restores the same
+# peers. Use cleanup.sh to erase them.
+if [[ "${ENABLE_AMNEZIAWG}" == "0" ]]; then
+  if [[ -f /etc/systemd/system/amneziawg-module.service ]]; then
+    systemctl disable --now amneziawg-module.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/amneziawg-module.service
+    systemctl daemon-reload
+    log_info "Removed amneziawg-module.service (AmneziaWG is disabled)."
+  fi
+  if [[ -f /etc/modules-load.d/amneziawg.conf ]]; then
+    rm -f /etc/modules-load.d/amneziawg.conf
+    log_info "Removed /etc/modules-load.d/amneziawg.conf (module stays loaded until reboot)."
+  fi
+fi
 
 echo ""
 log_info "Deployment complete."
@@ -330,11 +435,15 @@ echo ""
 
 mkdir -p clients
 chmod 700 clients
-# Extract the host-side port (first number before the colon in the udp mapping)
-AWG_UDP_PORT=$(grep -Eo '[0-9]+:[0-9]+/udp' docker-compose.yml | head -1 | cut -d: -f1)
 echo "Open these ports on your cloud firewall (AWS Security Group, GCP VPC, etc.):"
-printf "  %-14s — AmneziaWG\n"    "${AWG_UDP_PORT}/udp"
-printf "  %-14s — Xray REALITY\n" "443/tcp"
+if [[ "${ENABLE_AMNEZIAWG}" == "1" ]]; then
+  # Extract the host-side port (first number before the colon in the udp mapping)
+  AWG_UDP_PORT=$(grep -Eo '[0-9]+:[0-9]+/udp' docker-compose.yml | head -1 | cut -d: -f1)
+  printf "  %-14s — AmneziaWG\n" "${AWG_UDP_PORT}/udp"
+fi
+if [[ "${ENABLE_XRAY}" == "1" ]]; then
+  printf "  %-14s — Xray REALITY\n" "443/tcp"
+fi
 echo ""
 echo "Add your first client:"
 echo "  ./add-client.sh <name>"

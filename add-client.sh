@@ -14,9 +14,26 @@ fi
 readonly CLIENT_NAME="$1"
 validate_client_name "${CLIENT_NAME}"
 
-log_info "--- AmneziaWG ---"
-"${SCRIPT_DIR}/amneziawg/add-client.sh" "${CLIENT_NAME}"
-echo ""
+# Only add the client to the components this host actually deploys — the
+# generated docker-compose.yml says which ones (see deploy.sh's ENABLE_* flags).
+readonly COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+AWG_DEPLOYED=0
+XRAY_DEPLOYED=0
+component_enabled amneziawg "${COMPOSE_FILE}" && AWG_DEPLOYED=1
+component_enabled xray      "${COMPOSE_FILE}" && XRAY_DEPLOYED=1
 
-log_info "--- Xray REALITY ---"
-"${SCRIPT_DIR}/xray/add-client.sh" "${CLIENT_NAME}"
+if [[ "${AWG_DEPLOYED}" -eq 0 && "${XRAY_DEPLOYED}" -eq 0 ]]; then
+  log_error "No AmneziaWG or Xray service found in ${COMPOSE_FILE} — run deploy.sh first."
+  exit 1
+fi
+
+if [[ "${AWG_DEPLOYED}" -eq 1 ]]; then
+  log_info "--- AmneziaWG ---"
+  "${SCRIPT_DIR}/amneziawg/add-client.sh" "${CLIENT_NAME}"
+  echo ""
+fi
+
+if [[ "${XRAY_DEPLOYED}" -eq 1 ]]; then
+  log_info "--- Xray REALITY ---"
+  "${SCRIPT_DIR}/xray/add-client.sh" "${CLIENT_NAME}"
+fi
