@@ -525,6 +525,17 @@ Xray REALITY makes VPN traffic look like ordinary HTTPS to a **camouflage domain
 
 Client management requires a container restart (typically under 2 seconds). Each client is identified by a UUID and connects via the VLESS protocol with `xtls-rprx-vision` flow control.
 
+**`minClientVer` is pinned to `""` (no minimum)** in `config.json.tmpl`. From
+Xray-core **v26.7.11** the REALITY server defaults it to `26.3.27`, which
+rejects client apps that embed an older Xray core (many mobile clients do) — the
+handshake completes and the connection then fails, which looks like a broken
+profile. Setting it explicitly keeps that upgrade from locking users out; raise
+it deliberately if you ever want to force clients to update. Live `config.json`
+files generated before this default was added do **not** get it from a re-deploy
+(templates are never back-ported) — add the key by hand under
+`inbounds[0].streamSettings.realitySettings` before upgrading Xray past
+v26.7.11, then `docker compose restart xray`.
+
 ### DNS
 
 All VPN client DNS queries are intercepted via iptables DNAT and redirected to an internal dnscrypt-proxy instance. This resolver encrypts queries via DNSCrypt or DNS-over-HTTPS to Cloudflare and Google, enforces DNSSEC validation, and requires no-logging from upstream resolvers. The DNS container is not exposed to the host — it's accessible only within the Docker network.
