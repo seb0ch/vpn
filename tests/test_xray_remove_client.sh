@@ -59,7 +59,9 @@ assert all(r.get('user') is None or len(r['user']) > 0 for r in rules), rules
 PYEOF
 
 # 2. File mode is preserved by the atomic replace.
-mode="$(stat -f '%Lp' "${CONFIG}" 2>/dev/null || stat -c '%a' "${CONFIG}")"
+# GNU stat first: on Linux `stat -f` is "filesystem status" and *succeeds*, so
+# probing the BSD form first would silently return filesystem info, not a mode.
+mode="$(stat -c '%a' "${CONFIG}" 2>/dev/null || stat -f '%Lp' "${CONFIG}")"
 [[ "${mode}" == "600" ]] || fail "mode not preserved: ${mode}"
 
 # 3. Unknown client: exit 3, file untouched.
